@@ -253,6 +253,7 @@ export function managedModelV2ToModelInfo(model: ManagedModelV2): ModelInfo {
     includeSkillsUsageInstructions: false,
   };
 }
+<<<<<<< HEAD
 
 export function serializeManagedModelV2ForCodexCache(
   model: ManagedModelV2,
@@ -455,3 +456,5 @@ export function buildCodexModelsCachePayloadV2(
     models: serializeManagedModelsV2ForCodexCache(models),
   };
 }
+=======
+>>>>>>> 183d0ee5 (fix: remove Codex model cache export)
