@@ -28,9 +28,10 @@ test("管理员用量查询显式请求模型序列和时间粒度", async () =>
 });
 
 test("模型曲线保留原日曲线回退并提供可访问交互", async () => {
-  const [pageSource, chartSource] = await Promise.all([
+  const [pageSource, chartSource, gatewayStatusSource] = await Promise.all([
     readSource("src/app/page.tsx"),
     readSource("src/components/dashboard/admin-usage-trend-chart.tsx"),
+    readSource("src/components/dashboard/dashboard-gateway-status.tsx"),
   ]);
 
   assert.match(
@@ -43,4 +44,9 @@ test("模型曲线保留原日曲线回退并提供可访问交互", async () =>
   assert.match(chartSource, /aria-pressed=\{isSelected\}/);
   assert.match(chartSource, /MAX_SELECTED_MODELS = MODEL_SERIES_COLORS\.length/);
   assert.match(chartSource, /accessibilityLayer/);
+  assert.match(pageSource, /id="admin-usage-analytics"/);
+  assert.match(pageSource, /<DashboardGatewayStatus/);
+  assert.match(gatewayStatusSource, /今日 Token/);
+  assert.doesNotMatch(pageSource, /最近活动/);
+  assert.doesNotMatch(pageSource, /账号池健康/);
 });

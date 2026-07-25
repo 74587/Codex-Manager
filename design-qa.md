@@ -53,3 +53,99 @@ No actionable P0, P1, or P2 differences remain.
 - P3: a future iteration may add optional compact/list density controls for repositories containing hundreds of Skills. This is not required for the current workflow.
 
 final result: passed
+
+# Modern Web Dashboard Design QA
+
+## Evidence
+
+- Source visual truth:
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-cac18d53-3173-41b0-a42b-f13730484e20.png` — selected gateway status block.
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-7062d046-914c-48fb-8f7f-ed5b13f775fb.png` — selected administrator usage-analysis block.
+- Browser-rendered Web implementation:
+  - `C:/Users/qxnm/AppData/Local/Temp/codexmanager-modern-web-status.png` — gateway and upper analytics view.
+  - `C:/Users/qxnm/AppData/Local/Temp/codexmanager-modern-web-analytics.png` — chart and interval summaries.
+- Full and focused comparison evidence: `C:/Users/qxnm/AppData/Local/Temp/codexmanager-modern-web-comparison.png`.
+- Viewport: 1280 × 720 CSS pixels.
+- State: real `codexmanager-web` gateway at `http://127.0.0.1:48761/`, connected local service, administrator dashboard, Simplified Chinese, `mint` theme, `modern` appearance, truthful zero-account and zero-usage data.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain.
+
+- Fonts and typography: the Web render uses the same Segoe UI Variable/PingFang SC stack as the desktop shell. The hierarchy, compact control labels, monospaced metrics, line heights, wrapping, and truncation remain readable at the 1280px viewport.
+- Spacing and layout rhythm: the dashboard keeps exactly two primary surfaces. Modern appearance now reduces both surfaces to a translucent 72% card mix, an approximately 8% visible neutral border, and very low-amplitude shadows. The analytics chart and four summary regions use a 34% nested surface mix, so they no longer read as heavy cards stacked inside another card. Responsive density is intentionally more compact than the source crop; no content or persistent controls are clipped.
+- Colors and visual tokens: the source composition's structural hierarchy is preserved while the active `mint` theme supplies the accent. Green remains semantic for connected/available states. Ambient gradients, panel fills, borders, header, and sidebar now blend into one continuous background instead of forming abrupt rectangular blocks.
+- Image quality and asset fidelity: the production CodexManager logo and existing Lucide/Recharts assets remain sharp. No source logo, icon, chart, or decorative asset was replaced by placeholder imagery, CSS drawings, emoji, or handcrafted SVG.
+- Copy and content: the header is “仪表盘”; gateway status, six truthful metrics, administrator date controls, granularity/metric toggles, chart, and all four interval summaries are present. Removed dashboard sections do not return in Web mode.
+- Interaction and accessibility: Dashboard → OpenAI Accounts → Dashboard was exercised in the Web gateway. `modern + mint`, the shared command-center shell, and both primary panels remained active after the route return. The accessibility snapshot contains the gateway heading, analytics controls, chart label, and summaries. Browser warnings/errors checked: none.
+
+## Comparison History
+
+1. The first Web capture confirmed the shared two-block layout but the two large surfaces and nested analytics regions still read as distinct frosted cards.
+2. Added dashboard-specific modern-appearance hooks, reduced main-panel fill/border/shadow intensity, and reduced the nested chart/summary surface intensity without changing classic appearance.
+3. Rebuilt `apps/out`, reloaded the real Web gateway, captured both dashboard regions, and compared them together with the selected source crops. The revised Web render has no remaining P0/P1/P2 issue.
+
+## Implementation Checklist
+
+- [x] Serve the same rebuilt `apps/out` through `codexmanager-web`.
+- [x] Keep exactly the gateway status and administrator analytics surfaces.
+- [x] Soften modern main panels without weakening classic appearance.
+- [x] Reduce nested chart and summary block contrast.
+- [x] Preserve theme and shell state across Web route changes.
+- [x] Verify the real Web render and browser console.
+
+## Follow-up Polish
+
+- No P3 follow-up is required for the requested reduction in block prominence.
+
+final result: passed
+
+# Two-Block Dashboard Design QA
+
+## Evidence
+
+- Source visual truth:
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-cac18d53-3173-41b0-a42b-f13730484e20.png` — gateway status block.
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-7062d046-914c-48fb-8f7f-ed5b13f775fb.png` — administrator usage analysis block.
+- Source composite: `C:/Users/qxnm/.codex/visualizations/2026/07/24/019f931c-208a-7213-ae1e-baf23b91c737/dashboard-two-block-reference-composite.png`.
+- Real Tauri implementation: `C:/Users/qxnm/.codex/visualizations/2026/07/24/019f931c-208a-7213-ae1e-baf23b91c737/dashboard-after-route-return.png`.
+- Full-view comparison evidence: `C:/Users/qxnm/.codex/visualizations/2026/07/24/019f931c-208a-7213-ae1e-baf23b91c737/dashboard-two-blocks-comparison.png`.
+- Focused status comparison: `C:/Users/qxnm/.codex/visualizations/2026/07/24/019f931c-208a-7213-ae1e-baf23b91c737/dashboard-status-focused-comparison.png`.
+- Route-switch comparison: `C:/Users/qxnm/.codex/visualizations/2026/07/24/019f931c-208a-7213-ae1e-baf23b91c737/route-switch-shell-consistency.png`.
+- Viewport: 1949 × 1324 physical pixels at Windows/WebView scale 1.75, approximately 1114 × 757 logical pixels.
+- State: Simplified Chinese, expanded sidebar, connected gateway, zero accounts and zero usage. The dashboard was captured after navigating Dashboard → OpenAI Accounts → Dashboard in the real Tauri window.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain.
+
+- Fonts and typography: the Segoe UI/PingFang SC system stack, heading weights, metric monospace values, and compact control labels preserve the supplied component hierarchy. The page title now reads “仪表盘”; “路由指挥中心” no longer appears in the header.
+- Spacing and layout rhythm: the dashboard contains exactly two primary surfaces: the gateway status card and administrator usage analysis. Attention alerts, account-pool health, and recent-activity cards are removed. The two retained blocks use the reference radii, internal grid rhythm, and compact real-Tauri spacing.
+- Colors and visual tokens: violet remains the shell/action accent while green is reserved for connected state and usage-chart semantics. The same light violet shell remains visible on the Accounts route and after returning to Dashboard.
+- Image and icon fidelity: the production CodexManager logo is preserved, and standard UI symbols use the existing Lucide/Recharts libraries. No placeholder raster, emoji, CSS drawing, or handcrafted SVG was introduced.
+- Copy and content: gateway metrics remain truthful, with zero values shown instead of fabricated sample data. The complete administrator filters, date range, Token/request switch, granularity controls, zoom reset, chart, and summary metrics remain intact.
+- Navigation consistency: the dashboard compact shell is now global rather than conditional on `/`. The flat eight-item administrator navigation and violet active state remain stable on Accounts and after returning to Dashboard; grouped legacy navigation no longer reappears.
+- Accessibility and interaction: the retained controls preserve existing accessible names and keyboard semantics. The route-switch regression was exercised in the real Tauri accessibility tree without moving the user's pointer.
+
+## Comparison History
+
+1. The earlier command-center version contained a gateway hero, attention list, account-pool health, recent activity, compact trend, and full administrator analytics, which created excessive density.
+2. The user selected only the gateway status and administrator analytics blocks and requested the neutral “仪表盘” title. The extra dashboard regions and their request-log preload were removed.
+3. The reported style reversion was traced to two route conditionals: `data-command-center` only existed on `/`, and the flat sidebar only rendered on `/`. Both conditions were removed so the same shell persists across routes.
+4. Real-Tauri capture confirmed the two-block dashboard at the actual DPI. A second capture after Dashboard → OpenAI Accounts → Dashboard confirmed the shell and navigation no longer revert.
+
+## Implementation Checklist
+
+- [x] Keep only gateway status and administrator usage analysis on the admin dashboard.
+- [x] Rename the dashboard header to “仪表盘”.
+- [x] Remove attention, account health, recent activity, and compact duplicate trend regions.
+- [x] Stop preloading dashboard request logs that no longer have a visible consumer.
+- [x] Apply the violet shell and flat navigation consistently across top-level pages.
+- [x] Verify Dashboard → OpenAI Accounts → Dashboard in the real Tauri window.
+- [x] Preserve the full administrator analytics interaction set and truthful zero-data state.
+
+## Follow-up Polish
+
+- No P3 follow-up is required for the requested reduction.
+
+final result: passed
