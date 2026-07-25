@@ -84,7 +84,7 @@ const NavItem = memo(({
     aria-label={itemName}
     title={itemName}
     className={cn(
-      "group/nav relative flex min-h-11 items-center gap-3.5 overflow-hidden rounded-xl px-4 py-2 text-sm transition-[background-color,color,box-shadow] duration-300 ease-out hover:bg-primary/6 hover:text-primary xl:min-h-[58px] xl:gap-5 xl:rounded-2xl xl:px-5 xl:py-3 xl:text-base",
+      "group/nav relative flex min-h-11 items-center gap-3.5 overflow-hidden rounded-xl px-4 py-2 text-sm transition-[background-color,color,box-shadow] duration-300 ease-out hover:bg-primary/6 hover:text-primary xl:min-h-[58px] xl:gap-5 xl:rounded-2xl xl:px-5 xl:py-3 xl:text-base [@media(max-height:800px)]:min-h-10 [@media(max-height:800px)]:gap-3 [@media(max-height:800px)]:rounded-xl [@media(max-height:800px)]:px-4 [@media(max-height:800px)]:py-1.5 [@media(max-height:800px)]:text-sm",
       !isSidebarOpen && "justify-center px-0",
       isActive
         ? "bg-primary/10 text-primary shadow-[inset_0_1px_0_rgb(255_255_255/0.5),0_14px_28px_-24px_rgb(var(--primary-rgb)/0.55)]"
@@ -208,7 +208,7 @@ export function Sidebar() {
       />
       <div
         className={cn(
-          "flex h-[68px] items-center border-b border-border/55 shrink-0 xl:h-[96px]",
+          "flex h-[68px] items-center border-b border-border/55 shrink-0 xl:h-[96px] [@media(max-height:800px)]:h-[68px]",
           isSidebarOpen ? "px-4 xl:px-6" : "px-2 xl:px-2.5"
         )}
       >
@@ -223,7 +223,7 @@ export function Sidebar() {
             isSidebarOpen ? "justify-start text-left" : "justify-center"
           )}
         >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-primary/20 bg-card text-primary shadow-[0_12px_24px_-18px_rgb(var(--primary-rgb)/0.8)] xl:h-12 xl:w-12 xl:rounded-xl">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-primary/20 bg-card text-primary shadow-[0_12px_24px_-18px_rgb(var(--primary-rgb)/0.8)] xl:h-12 xl:w-12 xl:rounded-xl [@media(max-height:800px)]:h-9 [@media(max-height:800px)]:w-9 [@media(max-height:800px)]:rounded-[10px]">
             {logoFailed ? (
               <span className="text-sm font-bold">CM</span>
             ) : (
@@ -248,7 +248,7 @@ export function Sidebar() {
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-3.5 no-scrollbar xl:py-5">
+      <div className="flex-1 overflow-y-auto py-3.5 no-scrollbar xl:py-5 [@media(max-height:800px)]:py-3">
         <nav className="px-2.5 xl:px-3.5">
           {renderedItems}
         </nav>

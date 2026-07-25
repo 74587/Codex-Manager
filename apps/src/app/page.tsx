@@ -20,7 +20,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ApiKeyModal } from "@/components/modals/api-key-modal";
-import { DashboardGatewayStatus } from "@/components/dashboard/dashboard-gateway-status";
+import {
+  DashboardGatewayStatus,
+  DashboardPoolRemaining,
+} from "@/components/dashboard/dashboard-gateway-status";
 import {
   AdminUsageTrendChart,
   type AdminUsageGranularity,
@@ -43,7 +46,6 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -72,7 +74,6 @@ import { useCodexProfileModeStatus } from "@/hooks/useCodexProfileModeStatus";
 import {
   estimateChartYAxisWidth,
   formatCompactTokenAmount,
-  formatPercent,
 } from "@/lib/dashboard/format";
 import type { AppLocale } from "@/lib/i18n/config";
 import { useI18n } from "@/lib/i18n/provider";
@@ -897,8 +898,22 @@ function AdminDashboard() {
           available: stats.available,
           unavailable: stats.unavailable,
           todayTokens: adminUsageSummary?.todayUsage.totalTokens ?? stats.todayTokens,
+          cachedTokens:
+            adminUsageSummary?.todayUsage.cachedInputTokens ?? stats.cachedTokens,
+          reasoningTokens:
+            adminUsageSummary?.todayUsage.reasoningOutputTokens ?? stats.reasoningTokens,
           todayCost: adminUsageSummary?.todayUsage.estimatedCostUsd ?? stats.todayCost,
         }}
+        isLoading={isLoading}
+      />
+
+      <DashboardPoolRemaining
+        primary={stats.poolRemain.primary}
+        secondary={stats.poolRemain.secondary}
+        primaryKnownCount={stats.poolRemain.primaryKnownCount}
+        primaryBucketCount={stats.poolRemain.primaryBucketCount}
+        secondaryKnownCount={stats.poolRemain.secondaryKnownCount}
+        secondaryBucketCount={stats.poolRemain.secondaryBucketCount}
         isLoading={isLoading}
       />
 

@@ -54,6 +54,57 @@ No actionable P0, P1, or P2 differences remain.
 
 final result: passed
 
+# Dashboard Pool, Header Controls, and 90% Scale Design QA
+
+## Evidence
+
+- Source visual truth:
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-23a2aaa0-d6a3-4943-8ac9-1d95b953e08e.png` — account-pool remaining bar structure.
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-d028c403-7de3-4319-990d-43da26364072.png` — requested 90% right-side workspace density.
+  - `C:/Users/qxnm/AppData/Local/Temp/codex-clipboard-3e7e1ba9-f7c8-4343-8e35-f0b696e08575.png` — desktop header service switch and language-control reference.
+- Browser-rendered implementation: `C:/Users/qxnm/AppData/Local/Temp/codexmanager-dashboard-scale-90-final.png`.
+- Focused implementation crop: `C:/Users/qxnm/AppData/Local/Temp/codexmanager-dashboard-pool-scale-90-normalized.png`.
+- Full-view comparison evidence: the source density screenshot and `codexmanager-dashboard-scale-90-final.png` were inspected at the same wide desktop state.
+- Focused region comparison evidence: `C:/Users/qxnm/AppData/Local/Temp/codexmanager-dashboard-pool-scale-90-comparison.png`.
+- Viewport: 2048 × 900 CSS pixels.
+- State: real `codexmanager-web` runtime, connected local service, administrator dashboard, Simplified Chinese, expanded sidebar, truthful zero-account/zero-usage data, 90% wide-screen main-surface scale.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain.
+
+- Fonts and typography: the 90% main-surface scale preserves the existing system font stack, weights, monospaced metrics, line heights, and readable control labels. “账号池剩余” no longer truncates; its rendered width equals its content width.
+- Spacing and layout rhythm: the sidebar remains at its existing size while the header and page workspace use a 90% visual scale on `xl` screens. Compensating 111.111111% width and height keep the scaled surface flush with the available right-side viewport without blank edges or horizontal overflow.
+- Colors and visual tokens: the pool bar keeps theme-aware card, border, emerald, and blue tokens. The reference green tint is treated as a theme-state difference rather than hard-coded into every theme.
+- Image quality and asset fidelity: the production logo and existing Lucide/Recharts assets remain sharp. No reference asset was replaced with placeholder imagery, emoji, CSS drawing, or handcrafted SVG.
+- Copy and content: the gateway metric reads “今日/缓存/推理 用量” with three compact values; the pool block includes 5-hour and 7-day values/counts. The rebuilt Web menu includes every route allowed by the current non-account-system administrator mode; account-system-only routes remain dynamically hidden until `mode === "accounts"`.
+- Header controls: the language selector is visible on the dashboard. The service switch is no longer conditionally hidden on the administrator dashboard and remains capability-gated, so it appears in desktop mode while Web mode does not expose an unsupported service-process control.
+- Interaction and accessibility: the real Web DOM contains the complete allowed navigation, language combobox, token label, both progress bars, analytics controls, and chart. The dashboard has no page-level horizontal overflow. Runtime and navigation regression suites passed.
+
+## Comparison History
+
+1. The first Web capture came from a stale `codexmanager-web.exe` and showed the earlier fixed menu set. Stopped the exact workspace Web process, rebuilt `apps/out`, rebuilt `codexmanager-web`, restarted service + Web, and confirmed the dynamic allowed-route menu.
+2. The first focused pool comparison found “账号池剩余” truncated at the 2048px viewport. Increased the responsive title grid track from 170/190px to 210/220px; the post-fix DOM reports `clientWidth === scrollWidth` for the full title.
+3. The dashboard header intentionally hid both the desktop service switch and language selector on `/`. Removed those route-specific conditions and added regression coverage while retaining runtime capability checks.
+4. The user requested a 90% workspace density. Added an `xl`-only main-surface scale with inverse width/height compensation, rebuilt both desktop and Web outputs, and captured the final full view. The scaled surface fills the right-side viewport and keeps all requested dashboard content visible.
+
+## Implementation Checklist
+
+- [x] Add the account-pool remaining bar with two real quota windows.
+- [x] Display today/cache/reasoning token usage in one metric.
+- [x] Restore the full dynamic Web menu for the current role and mode.
+- [x] Keep account-system-only entries dynamic instead of hard-coding them.
+- [x] Restore the dashboard language selector and desktop service switch.
+- [x] Scale the wide-screen right-side workspace to 90% with layout compensation.
+- [x] Rebuild and restart the real local Web runtime.
+- [x] Verify the rendered DOM, focused comparison, runtime tests, and navigation flow.
+
+## Follow-up Polish
+
+- No P3 follow-up is required for the requested density change.
+
+final result: passed
+
 # Modern Web Dashboard Design QA
 
 ## Evidence

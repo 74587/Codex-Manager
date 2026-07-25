@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DisclaimerTicker } from "@/components/layout/disclaimer-ticker";
 import { LanguageSwitcher } from "@/components/layout/language-switcher";
 import { serviceClient } from "@/lib/api/service-client";
 import { appClient } from "@/lib/api/app-client";
@@ -132,7 +133,7 @@ export function Header() {
         }
         setServiceStatus({
           connected: true,
-          version: "",
+          version: initResult.version,
           addr: nextAddr,
         });
         toast.success(t("服务已启动"));
@@ -197,6 +198,11 @@ export function Header() {
             >
               <span className={serviceStatus.connected ? "mr-2 h-2 w-2 rounded-full bg-emerald-500" : "mr-2 h-2 w-2 rounded-full bg-rose-500"} />
               {serviceStatus.connected ? t("服务已连接") : t("服务未连接")}
+              {serviceStatus.version ? (
+                <span className="ml-2 border-l border-border/70 pl-2 font-mono text-[10px] text-muted-foreground xl:text-xs">
+                  v{serviceStatus.version}
+                </span>
+              ) : null}
             </Badge>
 
             {canManageService ? (
@@ -216,14 +222,12 @@ export function Header() {
                   }}
                   onBlur={() => void handlePortBlur()}
                 />
-                {!isCommandCenter ? (
-                  <Switch
-                    checked={serviceStatus.connected}
-                    disabled={isToggling}
-                    onCheckedChange={handleToggleService}
-                    className="scale-90"
-                  />
-                ) : null}
+                <Switch
+                  checked={serviceStatus.connected}
+                  disabled={isToggling}
+                  onCheckedChange={handleToggleService}
+                  className="scale-90"
+                />
               </div>
             ) : null}
 
@@ -239,7 +243,8 @@ export function Header() {
             </Button>
           </div>
 
-          {!isCommandCenter ? <LanguageSwitcher compact triggerClassName="w-[106px]" /> : null}
+          <DisclaimerTicker compact />
+          <LanguageSwitcher compact triggerClassName="w-[106px]" />
 
           {canLogoutWebSession ? (
             <Button

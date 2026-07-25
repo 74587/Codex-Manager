@@ -151,6 +151,17 @@ test("narrow viewports start with the sidebar collapsed", async () => {
   assert.match(source, /narrowViewport\.removeEventListener\("change", collapseSidebar\)/);
 });
 
+test("wide but short windows keep the complete sidebar discoverable", async () => {
+  const source = await fs.readFile(
+    path.join(appsRoot, "src", "components", "layout", "sidebar.tsx"),
+    "utf8",
+  );
+
+  assert.match(source, /\[@media\(max-height:800px\)\]:min-h-10/);
+  assert.match(source, /\[@media\(max-height:800px\)\]:h-\[68px\]/);
+  assert.match(source, /\[@media\(max-height:800px\)\]:py-3/);
+});
+
 test("page fallback stays aligned with both sidebar widths", async () => {
   const source = await fs.readFile(
     path.join(

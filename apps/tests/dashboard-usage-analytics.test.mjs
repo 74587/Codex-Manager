@@ -46,7 +46,13 @@ test("模型曲线保留原日曲线回退并提供可访问交互", async () =>
   assert.match(chartSource, /accessibilityLayer/);
   assert.match(pageSource, /id="admin-usage-analytics"/);
   assert.match(pageSource, /<DashboardGatewayStatus/);
-  assert.match(gatewayStatusSource, /今日 Token/);
+  assert.match(gatewayStatusSource, /今日\/缓存\/推理 用量/);
+  assert.match(gatewayStatusSource, /formatCompactTokenAmount\(stats\.todayTokens\)/);
+  assert.match(gatewayStatusSource, /formatCompactTokenAmount\(stats\.cachedTokens\)/);
+  assert.match(gatewayStatusSource, /formatCompactTokenAmount\(stats\.reasoningTokens\)/);
+  assert.match(pageSource, /<DashboardPoolRemaining/);
+  assert.match(gatewayStatusSource, /label=\{t\("5小时内"\)\}/);
+  assert.match(gatewayStatusSource, /label=\{t\("7天内"\)\}/);
   assert.doesNotMatch(pageSource, /最近活动/);
   assert.doesNotMatch(pageSource, /账号池健康/);
 });
