@@ -46,6 +46,11 @@ test("模型曲线保留原日曲线回退并提供可访问交互", async () =>
   assert.match(chartSource, /var\(--usage-series-1\)/);
   assert.match(chartSource, /type="linear"/);
   assert.match(chartSource, /strokeDasharray="7 5"/);
+  assert.match(chartSource, /<Brush/);
+  assert.match(chartSource, /itemSorter=/);
+  assert.match(chartSource, /hoveredModel/);
+  assert.match(chartSource, /已选 \{selected\}\/\{max\}/);
+  assert.match(chartSource, /最多同时比较 \{count\} 个模型/);
   assert.match(chartSource, /accessibilityLayer/);
   assert.match(pageSource, /id="admin-usage-analytics"/);
   assert.match(pageSource, /<DashboardGatewayStatus/);
@@ -58,6 +63,18 @@ test("模型曲线保留原日曲线回退并提供可访问交互", async () =>
   assert.match(gatewayStatusSource, /label=\{t\("7天内"\)\}/);
   assert.doesNotMatch(pageSource, /最近活动/);
   assert.doesNotMatch(pageSource, /账号池健康/);
+});
+
+test("模型图例随当前指标排序并保持稳定颜色", async () => {
+  const chartSource = await readSource(
+    "src/components/dashboard/admin-usage-trend-chart.tsx",
+  );
+
+  assert.match(chartSource, /rankedModelSeries/);
+  assert.match(chartSource, /metricValue\(right\.usage, metric\)/);
+  assert.match(chartSource, /stableModelIndexByName/);
+  assert.match(chartSource, /totalMetricForRange/);
+  assert.match(chartSource, /share\.toFixed\(1\)/);
 });
 
 test("模型曲线在查询刷新时保留内容并显示明确反馈", async () => {
