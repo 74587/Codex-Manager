@@ -2678,12 +2678,9 @@ fn set_preferred_account_keeps_only_one_account_selected() {
         Some("acc-b".to_string())
     );
 
-    assert!(
-        storage
-            .clear_preferred_account_if("acc-a")
-            .expect("clear non-preferred")
-            == false
-    );
+    assert!(!storage
+        .clear_preferred_account_if("acc-a")
+        .expect("clear non-preferred"));
     assert!(storage
         .clear_preferred_account_if("acc-b")
         .expect("clear preferred"));

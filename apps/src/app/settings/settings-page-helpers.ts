@@ -93,6 +93,27 @@ export const ROUTE_STRATEGY_LABELS: Record<string, string> = {
   balanced: "均衡轮询 (Balanced)",
 };
 
+export function formatFreeAccountMaxModelLabel(
+  value: string | null | undefined,
+): string {
+  const normalized = String(value || "").trim();
+  return !normalized || normalized === "auto" ? "不限制" : normalized;
+}
+
+export function resolveFreeAccountMaxModelOptions(
+  current: string | null | undefined,
+  options: readonly string[] | null | undefined,
+): string[] {
+  const items = ["auto"];
+  for (const value of options || []) {
+    const normalized = String(value || "").trim();
+    if (normalized && !items.includes(normalized)) items.push(normalized);
+  }
+  const normalizedCurrent = String(current || "").trim() || "auto";
+  if (!items.includes(normalizedCurrent)) items.push(normalizedCurrent);
+  return items;
+}
+
 export const SERVICE_LISTEN_MODE_LABELS: Record<string, string> = {
   loopback: "仅本机 (localhost)",
   all_interfaces: "全部网卡 (0.0.0.0)",

@@ -146,7 +146,10 @@
 - 客户端发 `codex-auto-review`，上游请求体继续使用 `codex-auto-review`
 - 只有显式模型转发规则、平台密钥强绑模型或聚合 API 自身 `modelOverride` 这类明确配置才会改写请求模型
 - 账号模型映射、聚合 API 模型映射、free / 7 天单窗口账号类型不会隐式改写请求模型
-- 历史设置 `gateway.free_account_max_model` / `appSettings.freeAccountMaxModel` 为兼容旧配置保留，不再参与上游请求模型改写
+- `gateway.free_account_max_model` / `appSettings.freeAccountMaxModel` / `CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL` 只限制 Free 账号参与候选，不会改写请求模型
+- 默认值 `auto` 表示不限制；选择具体模型后，模型目录中排序高于该模型的请求会从候选池中跳过 Free 账号
+- 未知请求模型在配置具体上限时按超过上限处理；Plus / Pro 等非 Free 账号不受影响
+- 混合账号优先模式下，过滤后的账号候选耗尽时仍沿用现有聚合 API fallback
 
 ### 请求体压缩
 
