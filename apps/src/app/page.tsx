@@ -567,6 +567,7 @@ function DailyTokenLineChart({
 function AdminUsageAnalyticsCard({
   summary,
   isLoading,
+  isRefreshing,
   isError,
   rangePreset,
   rangeStartInput,
@@ -581,6 +582,7 @@ function AdminUsageAnalyticsCard({
 }: {
   summary: DashboardAdminUsageSummary | undefined;
   isLoading: boolean;
+  isRefreshing: boolean;
   isError: boolean;
   rangePreset: AdminUsageRangePreset;
   rangeStartInput: string;
@@ -759,6 +761,7 @@ function AdminUsageAnalyticsCard({
             hourlyAvailable={
               summary.rangeEndTs - summary.rangeStartTs <= 31 * 86_400
             }
+            isRefreshing={isRefreshing}
           />
         ) : (
           <DailyTokenLineChart
@@ -867,6 +870,7 @@ function AdminDashboard() {
   const {
     data: adminUsageSummary,
     isLoading: isAdminUsageLoading,
+    isFetching: isAdminUsageFetching,
     isError: isAdminUsageError,
   } = useDashboardAdminUsageSummary(
     {
@@ -921,6 +925,7 @@ function AdminDashboard() {
         <AdminUsageAnalyticsCard
           summary={adminUsageSummary}
           isLoading={isLoading || isAdminUsageLoading}
+          isRefreshing={isAdminUsageFetching && !isAdminUsageLoading}
           isError={isAdminUsageError}
           rangePreset={adminUsageRangePreset}
           rangeStartInput={adminUsageRangeStartInput}

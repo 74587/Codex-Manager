@@ -822,8 +822,11 @@ pub(crate) fn apply_async_upstream_proxy(
     runtime_config::apply_async_upstream_proxy(builder, proxy_url, invalid_event)
 }
 
-pub(crate) fn current_upstream_proxy_url_for_account(account_id: &str) -> Option<String> {
-    runtime_config::upstream_proxy_url_for_account(account_id)
+pub(crate) fn current_websocket_proxy_url_for_account(
+    account_id: &str,
+    target_url: &str,
+) -> Result<Option<String>, String> {
+    runtime_config::websocket_proxy_url_for_account(account_id, target_url)
 }
 
 /// 函数 `set_upstream_proxy_url`
@@ -1005,6 +1008,10 @@ pub(crate) fn gateway_resolve_effective_upstream_base(
         .as_deref()
         .map(upstream::config::normalize_upstream_base_url)
         .unwrap_or_else(resolve_upstream_base_url)
+}
+
+pub(crate) fn gateway_should_send_chatgpt_account_header(base: &str) -> bool {
+    upstream::config::should_send_chatgpt_account_header(base)
 }
 
 /// 函数 `gateway_supports_official_responses_websocket`
