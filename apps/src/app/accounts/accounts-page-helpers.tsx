@@ -24,6 +24,12 @@ import type { Account } from "@/types";
 export type StatusFilter = "all" | "available" | "low_quota" | "limited" | "banned";
 export type AccountExportMode = "single" | "multiple";
 export type AccountSizeSortMode = "large-first" | "small-first";
+export type AccountMoveDirection = "up" | "down" | "top" | "bottom";
+export type AccountMovePlacement =
+  | { type: "top" }
+  | { type: "bottom" }
+  | { type: "before"; anchorAccountId: string }
+  | { type: "after"; anchorAccountId: string };
 
 const ACCOUNT_SORT_STEP = 5;
 
@@ -594,6 +600,39 @@ export function buildAccountOrderUpdates(orderedAccounts: Account[]) {
     },
     [],
   );
+}
+
+// 按目标位置重排账号；锚点账号不存在时返回 null，由调用方提示刷新。
+export function buildAccountsByMovedOrder(
+  orderedAccounts: Account[],
+  account: Account,
+  placement: AccountMovePlacement,
+): Account[] | null {
+  const reorderedAccounts = orderedAccounts.filter(
+    (item) => item.id !== account.id,
+  );
+
+  if (placement.type === "top") {
+    reorderedAccounts.unshift(account);
+    return reorderedAccounts;
+  }
+  if (placement.type === "bottom") {
+    reorderedAccounts.push(account);
+    return reorderedAccounts;
+  }
+
+  const anchorIndex = reorderedAccounts.findIndex(
+    (item) => item.id === placement.anchorAccountId,
+  );
+  if (anchorIndex === -1) {
+    return null;
+  }
+  reorderedAccounts.splice(
+    placement.type === "before" ? anchorIndex : anchorIndex + 1,
+    0,
+    account,
+  );
+  return reorderedAccounts;
 }
 
 export function getAccountSizeGroup(

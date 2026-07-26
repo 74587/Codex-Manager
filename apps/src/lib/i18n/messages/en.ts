@@ -429,6 +429,8 @@ export const EN_MESSAGES: MessageCatalog = {
   未提供: "Unavailable",
   上移一位: "Move up",
   下移一位: "Move down",
+  移到顶部: "Move to top",
+  移到底部: "Move to bottom",
   编辑账号信息: "Edit account info",
   用量详情: "Usage details",
   套餐信息: "Subscription info",
