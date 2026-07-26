@@ -816,7 +816,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
 
       <Card className="glass-card mission-panel overflow-hidden py-0 shadow-sm">
         <CardContent className="p-0">
-          <Table>
+          <Table className="min-w-[1164px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-12 text-center">
