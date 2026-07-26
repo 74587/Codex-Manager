@@ -178,10 +178,10 @@ export function Header() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex min-h-[68px] items-center justify-between gap-3 glass-header px-5 xl:min-h-[96px] xl:gap-4 xl:pl-9 xl:pr-[45px]">
+      <header className="sticky top-0 z-30 flex min-h-[68px] items-center justify-between gap-1.5 glass-header px-2 sm:gap-3 sm:px-4 xl:min-h-[96px] xl:gap-4 xl:pl-9 xl:pr-[45px]">
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
-        <div className="flex min-w-0 items-center gap-4 xl:gap-5">
-          <h1 className="truncate text-[21px] font-semibold tracking-[-0.015em] text-foreground xl:text-[27px]">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-4 xl:gap-5">
+          <h1 className="truncate text-lg font-semibold tracking-[-0.015em] text-foreground sm:text-[21px] xl:text-[27px]">
             {getPageTitle()}
           </h1>
           <span className="hidden items-center gap-2 text-sm text-muted-foreground md:flex xl:text-[15px]" suppressHydrationWarning>
@@ -190,7 +190,7 @@ export function Header() {
           </span>
         </div>
 
-        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-2">
           <div className={`hidden h-10 items-center rounded-full border border-border/55 bg-background/70 px-1.5 shadow-[0_14px_30px_-22px_rgb(15_23_42/0.45)] backdrop-blur-2xl sm:flex xl:h-12 xl:px-2 ${isCommandCenter ? "min-w-[320px] justify-center xl:min-w-[430px]" : ""}`}>
             <Badge
               variant="secondary"
@@ -244,7 +244,10 @@ export function Header() {
           </div>
 
           <DisclaimerTicker compact />
-          <LanguageSwitcher compact triggerClassName="w-[106px]" />
+          <LanguageSwitcher
+            compact
+            triggerClassName="w-9 min-w-9 px-0 sm:w-[106px] sm:min-w-[106px] sm:px-3"
+          />
 
           {canLogoutWebSession ? (
             <Button

@@ -17,8 +17,12 @@ test("mobile shell preserves page titles and compact controls", async () => {
     readSource("src/components/layout/page-workspace.tsx"),
   ]);
 
-  assert.match(headerSource, /hidden h-10 w-10[\s\S]*sm:flex/);
-  assert.match(headerSource, /<span className="hidden sm:inline">/);
+  assert.match(
+    headerSource,
+    /gap-1\.5 glass-header px-2[\s\S]*sm:gap-3 sm:px-4/,
+  );
+  assert.match(headerSource, /flex min-w-0 flex-1[\s\S]*overflow-hidden/);
+  assert.match(headerSource, /truncate text-lg[\s\S]*sm:text-\[21px\]/);
   assert.match(headerSource, /triggerClassName="w-9 min-w-9/);
   assert.match(languageSource, /compact \? "hidden min-w-0 sm:inline"/);
   assert.match(workspaceSource, /line-clamp-2[\s\S]*sm:line-clamp-1/);
