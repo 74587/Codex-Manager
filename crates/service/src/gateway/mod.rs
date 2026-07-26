@@ -158,6 +158,11 @@ pub(crate) use trace_log::{
     log_client_service_tier, log_request_execution_plan, log_request_final, log_request_start,
     next_trace_id,
 };
+
+pub(crate) fn strip_cross_account_encrypted_content(body: &[u8]) -> Option<Vec<u8>> {
+    upstream::support::payload_rewrite::strip_encrypted_content_from_body(body)
+}
+
 #[cfg(test)]
 use upstream::config::normalize_upstream_base_url;
 use upstream::config::{
