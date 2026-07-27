@@ -19,7 +19,7 @@
     <img alt="GitHub 仓库" src="https://img.shields.io/badge/GitHub-%E4%BB%93%E5%BA%93-181717?logo=github&logoColor=white" />
   </a>
   <a href="https://atomgit.com/qxnm/Codex-Manager">
-    <img alt="AtomGit 仓库" src="https://img.shields.io/badge/AtomGit-%E4%BB%93%E5%BA%93-DA203E" />
+    <img alt="AtomGit G-Star" src="https://atomgit.com/qxnm/Codex-Manager/star/new_badge.svg" />
   </a>
   <a href="https://gitee.com/hongshungao/Codex-Manager">
     <img alt="Gitee 仓库" src="https://img.shields.io/badge/Gitee-%E4%BB%93%E5%BA%93-C71D23?logo=gitee&logoColor=C71D23" />
