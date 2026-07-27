@@ -16,13 +16,13 @@
 
 <p align="center">
   <a href="https://github.com/qxcnm/Codex-Manager">
-    <img alt="GitHub 仓库" src="https://img.shields.io/badge/GitHub-%E4%BB%93%E5%BA%93-181717?logo=github&logoColor=white" />
+    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
   </a>
   <a href="https://atomgit.com/qxnm/Codex-Manager">
-    <img alt="AtomGit G-Star" src="https://atomgit.com/qxnm/Codex-Manager/star/new_badge.svg" />
+    <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
   </a>
   <a href="https://gitee.com/hongshungao/Codex-Manager">
-    <img alt="Gitee 仓库" src="https://img.shields.io/badge/Gitee-%E4%BB%93%E5%BA%93-C71D23?logo=gitee&logoColor=C71D23" />
+    <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
   </a>
 </p>
 
