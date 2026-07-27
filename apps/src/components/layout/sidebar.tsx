@@ -254,7 +254,12 @@ export function Sidebar() {
         </nav>
       </div>
 
-      <div className="border-t border-border/55 p-2.5 shrink-0">
+      <div
+        className={cn(
+          "shrink-0 border-t border-border/55 p-2.5",
+          !isSidebarOpen && "flex justify-center",
+        )}
+      >
         <Button
           variant="ghost"
           size="icon"
@@ -262,7 +267,7 @@ export function Sidebar() {
             "h-9 rounded-md border border-transparent text-muted-foreground hover:border-primary/20 hover:text-primary",
             isSidebarOpen
               ? "w-full justify-start gap-3 px-3"
-              : "mx-auto w-9 justify-center px-0",
+              : "w-9 justify-center px-0",
           )}
           title={toggleTitle}
           aria-label={toggleTitle}
