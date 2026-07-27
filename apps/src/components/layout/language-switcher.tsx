@@ -27,7 +27,10 @@ export function LanguageSwitcher({
   const { locale, localeOptions, setLocale, isSwitchingLocale, t } = useI18n();
 
   return (
-    <div className={cn("flex items-center gap-2", className)}>
+    <div
+      data-slot="language-switcher"
+      className={cn("flex items-center gap-2", className)}
+    >
       {!compact ? (
         <span className="text-xs font-medium text-muted-foreground">
           {t("界面语言")}
@@ -45,11 +48,8 @@ export function LanguageSwitcher({
           <div className="flex min-w-0 flex-1 items-center justify-center gap-2 overflow-hidden">
             <Globe className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span
-              className={
-                compact
-                  ? "hidden min-w-0 flex-1 overflow-hidden sm:flex"
-                  : "flex min-w-0 flex-1 overflow-hidden"
-              }
+              data-slot="language-switcher-label"
+              className="flex min-w-0 flex-1 overflow-hidden"
             >
               <SelectValue className="min-w-0 truncate">
                 {(value) => getLocaleLabel(normalizeLocale(value))}
