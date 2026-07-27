@@ -20,7 +20,7 @@ test("管理员仪表盘保留服务开关和语言选择", async () => {
   assert.match(source, /<Switch[\s\S]*?onCheckedChange=\{handleToggleService\}/);
   assert.match(
     source,
-    /<LanguageSwitcher[\s\S]*?compact[\s\S]*?triggerClassName="w-9 min-w-9[\s\S]*?sm:w-\[106px\]/,
+    /<LanguageSwitcher[\s\S]*?compact[\s\S]*?triggerClassName="w-10 min-w-10 gap-1 px-0[\s\S]*?sm:w-\[124px\][\s\S]*?sm:gap-2/,
   );
   assert.match(source, /<DisclaimerTicker compact \/>/);
   assert.match(source, /v\{serviceStatus\.version\}/);
