@@ -1010,20 +1010,27 @@ tr {
 
 .table-sticky-action-head {
   z-index: 4;
-  background: var(--console-panel-strong);
+  background: var(--card-solid);
 }
 
 .table-sticky-action-cell {
   z-index: 3;
-  background: var(--console-panel);
+  background: var(--card-solid);
+}
+
+[data-appearance='modern'] .table-sticky-action-head,
+[data-appearance='modern'] .table-sticky-action-cell {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--card-solid);
 }
 
 [data-slot="table-body"] [data-slot="table-row"]:hover .table-sticky-action-cell {
-  background: var(--table-row-hover-bg);
+  background: color-mix(in srgb, var(--card-solid) 94%, rgb(var(--primary-rgb)) 6%);
 }
 
 [data-slot="table-body"] [data-slot="table-row"][data-state="selected"] .table-sticky-action-cell {
-  background: var(--table-row-selected-bg);
+  background: color-mix(in srgb, var(--card-solid) 90%, rgb(var(--primary-rgb)) 10%);
 }
 
 /* 🚀 Performance Mode Logic (Fixed Selectors) */
