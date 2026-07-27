@@ -246,7 +246,7 @@ export function Header() {
           <DisclaimerTicker compact />
           <LanguageSwitcher
             compact
-            triggerClassName="w-9 min-w-9 px-0 sm:w-[106px] sm:min-w-[106px] sm:px-3"
+            triggerClassName="w-10 min-w-10 gap-1 px-0 sm:w-[124px] sm:min-w-[124px] sm:gap-2 sm:px-2.5"
           />
 
           {canLogoutWebSession ? (
