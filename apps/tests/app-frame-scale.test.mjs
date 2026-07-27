@@ -22,4 +22,8 @@ test("宽屏主内容区使用 90% 视觉比例并补偿布局尺寸", async () 
   assert.match(source, /xl:h-\[111\.111111%\]/);
   assert.match(source, /xl:w-\[111\.111111%\]/);
   assert.match(source, /origin-top-left/);
+  assert.match(source, /px-4 pb-7 pt-4/);
+  assert.match(source, /lg:px-5 lg:pt-5/);
+  assert.match(source, /xl:pl-\[26px\]/);
+  assert.match(source, /xl:pt-\[26px\]/);
 });
