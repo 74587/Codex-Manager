@@ -1,6 +1,6 @@
 use super::{
     build_backend_base_url, build_local_backend_client, front_proxy_max_blocking_threads,
-    front_proxy_worker_threads, normalize_incoming_request_body, proxy_handler,
+    front_proxy_worker_threads, normalize_incoming_request_body, proxy_handler, zstd_body_limit,
     IncomingBodyDecodeError, ProxyState,
 };
 use axum::body::{to_bytes, Body};
@@ -27,6 +27,7 @@ struct EnvGuard {
 }
 
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+const TEST_ZSTD_MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 
 impl EnvGuard {
     /// 函数 `set`
@@ -80,6 +81,7 @@ fn normalize_body_for_test(
     body: Bytes,
     max_body_bytes: usize,
 ) -> Result<Bytes, IncomingBodyDecodeError> {
+    let decode_limit = zstd_body_limit(max_body_bytes, TEST_ZSTD_MAX_BODY_BYTES);
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -87,7 +89,7 @@ fn normalize_body_for_test(
         .block_on(normalize_incoming_request_body(
             headers,
             body,
-            max_body_bytes,
+            decode_limit,
             None,
         ))
 }
@@ -211,11 +213,35 @@ fn default_front_proxy_limit_decodes_official_image_request_above_64_mib() {
         Bytes::from(compressed),
         /*max_body_bytes*/ 0,
     )
-    .expect("default zero limit must preserve unbounded request behavior");
+    .expect("default zstd safety limit must allow official image request");
 
     assert_eq!(decoded.len(), expected_len);
     assert!(decoded.starts_with(prefix));
     assert!(decoded.ends_with(suffix));
+}
+
+#[test]
+fn zstd_body_limit_combines_generic_and_decompression_limits() {
+    assert_eq!(zstd_body_limit(0, 256), 256);
+    assert_eq!(zstd_body_limit(128, 256), 128);
+    assert_eq!(zstd_body_limit(512, 256), 256);
+    assert_eq!(zstd_body_limit(0, 0), 1);
+}
+
+#[test]
+fn zero_zstd_safety_limit_falls_back_to_safe_default() {
+    let _guard = crate::test_env_guard();
+    let _ = crate::gateway::front_proxy_zstd_max_body_bytes();
+    let zstd_limit_guard = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES", "0");
+    crate::gateway::reload_runtime_config_from_env();
+
+    assert_eq!(
+        crate::gateway::front_proxy_zstd_max_body_bytes(),
+        TEST_ZSTD_MAX_BODY_BYTES
+    );
+
+    drop(zstd_limit_guard);
+    crate::gateway::reload_runtime_config_from_env();
 }
 
 #[test]
@@ -273,7 +299,11 @@ fn decompressed_zstd_request_body_respects_front_proxy_limit() {
 fn zero_front_proxy_limit_does_not_reject_large_declared_zstd_body() {
     let _guard = crate::test_env_guard();
     let _ = crate::gateway::front_proxy_max_body_bytes();
-    let _body_limit_guard = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES", "0");
+    let body_limit_guard = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES", "0");
+    let zstd_limit_guard = EnvGuard::set(
+        "CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES",
+        (128_u64 * 1024 * 1024).to_string().as_str(),
+    );
     crate::gateway::reload_runtime_config_from_env();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -295,6 +325,43 @@ fn zero_front_proxy_limit_does_not_reject_large_declared_zstd_body() {
 
     let response = runtime.block_on(proxy_handler(State(state), request));
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    drop(zstd_limit_guard);
+    drop(body_limit_guard);
+    crate::gateway::reload_runtime_config_from_env();
+}
+
+#[test]
+fn zstd_safety_limit_rejects_oversized_declared_body_when_generic_limit_is_disabled() {
+    let _guard = crate::test_env_guard();
+    let _ = crate::gateway::front_proxy_zstd_max_body_bytes();
+    let body_limit_guard = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES", "0");
+    let zstd_limit_guard = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_ZSTD_MAX_BODY_BYTES", "32");
+    crate::gateway::reload_runtime_config_from_env();
+    assert_eq!(crate::gateway::front_proxy_zstd_max_body_bytes(), 32);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: build_local_backend_client().expect("client"),
+    };
+    let request = HttpRequest::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header(header::CONTENT_ENCODING, "zstd")
+        .header(header::CONTENT_LENGTH, "33")
+        .body(Body::empty())
+        .expect("request");
+
+    let response = runtime.block_on(proxy_handler(State(state), request));
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    drop(zstd_limit_guard);
+    drop(body_limit_guard);
+    crate::gateway::reload_runtime_config_from_env();
 }
 
 /// 函数 `request_without_content_length_over_limit_returns_413`

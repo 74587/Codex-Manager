@@ -125,6 +125,15 @@ fn has_zstd_magic(body: &[u8]) -> bool {
     body.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])
 }
 
+fn zstd_body_limit(max_body_bytes: usize, zstd_max_body_bytes: usize) -> usize {
+    let zstd_max_body_bytes = zstd_max_body_bytes.max(1);
+    if max_body_bytes == 0 {
+        zstd_max_body_bytes
+    } else {
+        max_body_bytes.min(zstd_max_body_bytes)
+    }
+}
+
 fn try_acquire_zstd_decode_permit(
 ) -> Result<tokio::sync::SemaphorePermit<'static>, IncomingBodyDecodeError> {
     ZSTD_DECODE_SEMAPHORE
@@ -138,10 +147,7 @@ fn try_acquire_zstd_decode_permit(
         })
 }
 
-fn decode_zstd_body(
-    body: &[u8],
-    max_body_bytes: usize,
-) -> Result<Vec<u8>, IncomingBodyDecodeError> {
+fn decode_zstd_body(body: &[u8], decode_limit: usize) -> Result<Vec<u8>, IncomingBodyDecodeError> {
     let decoder =
         zstd::stream::read::Decoder::new(body).map_err(|err| IncomingBodyDecodeError {
             status: StatusCode::BAD_REQUEST,
@@ -151,15 +157,8 @@ fn decode_zstd_body(
             ),
         })?;
     let mut decoded = Vec::new();
-    // Keep the documented front-proxy setting semantics: zero disables body rejection.
-    // Official Codex image-heavy histories can legitimately exceed 64 MiB after decoding.
-    let read_result = if max_body_bytes == 0 {
-        let mut decoder = decoder;
-        decoder.read_to_end(&mut decoded)
-    } else {
-        let mut limited = decoder.take(max_body_bytes.saturating_add(1) as u64);
-        limited.read_to_end(&mut decoded)
-    };
+    let mut limited = decoder.take(decode_limit.saturating_add(1) as u64);
+    let read_result = limited.read_to_end(&mut decoded);
     read_result.map_err(|err| IncomingBodyDecodeError {
         status: StatusCode::BAD_REQUEST,
         message: crate::gateway::bilingual_error(
@@ -167,12 +166,12 @@ fn decode_zstd_body(
             format!("invalid zstd request body: {err}"),
         ),
     })?;
-    if max_body_bytes > 0 && decoded.len() > max_body_bytes {
+    if decoded.len() > decode_limit {
         return Err(IncomingBodyDecodeError {
             status: StatusCode::PAYLOAD_TOO_LARGE,
             message: crate::gateway::bilingual_error(
                 "请求体过大",
-                format!("request body too large after zstd decompression: >{max_body_bytes}"),
+                format!("request body too large after zstd decompression: >{decode_limit}"),
             ),
         });
     }
@@ -182,7 +181,7 @@ fn decode_zstd_body(
 async fn normalize_incoming_request_body(
     headers: &mut HeaderMap,
     body: Bytes,
-    max_body_bytes: usize,
+    decode_limit: usize,
     decode_permit: Option<tokio::sync::SemaphorePermit<'static>>,
 ) -> Result<Bytes, IncomingBodyDecodeError> {
     if body.is_empty() || (!has_zstd_content_encoding(headers) && !has_zstd_magic(body.as_ref())) {
@@ -195,7 +194,7 @@ async fn normalize_incoming_request_body(
     };
     let decoded = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        decode_zstd_body(body.as_ref(), max_body_bytes)
+        decode_zstd_body(body.as_ref(), decode_limit)
     })
     .await
     .map_err(|err| IncomingBodyDecodeError {
@@ -230,6 +229,8 @@ async fn proxy_handler(
     let prefer_raw_errors = crate::gateway::prefers_raw_errors_for_http_headers(&parts.headers);
     let target_url = build_target_url(&state.backend_base_url, &parts.uri);
     let max_body_bytes = crate::gateway::front_proxy_max_body_bytes();
+    let zstd_max_body_bytes = crate::gateway::front_proxy_zstd_max_body_bytes();
+    let zstd_decode_limit = zstd_body_limit(max_body_bytes, zstd_max_body_bytes);
     let declared_zstd = has_zstd_content_encoding(&parts.headers);
     let zstd_decode_permit = if declared_zstd {
         match try_acquire_zstd_decode_permit() {
@@ -245,7 +246,11 @@ async fn proxy_handler(
     } else {
         None
     };
-    let request_body_limit = max_body_bytes;
+    let request_body_limit = if declared_zstd {
+        zstd_decode_limit
+    } else {
+        max_body_bytes
+    };
 
     if let Some(content_length) = parts
         .headers
@@ -302,7 +307,7 @@ async fn proxy_handler(
     let body_bytes = match normalize_incoming_request_body(
         &mut outbound_headers,
         body_bytes,
-        max_body_bytes,
+        zstd_decode_limit,
         zstd_decode_permit,
     )
     .await
