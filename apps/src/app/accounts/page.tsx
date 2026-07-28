@@ -13,9 +13,12 @@ import {
 } from "@/lib/api/account-client";
 import { useI18n } from "@/lib/i18n/provider";
 import {
+  buildAccountsByMovedOrder,
   buildAccountsBySizeOrder,
   buildAccountOrderUpdates,
   type AccountEditorState,
+  type AccountMoveDirection,
+  type AccountMovePlacement,
   type DeleteDialogState,
   normalizeAccountPlanKey,
   normalizeTagsDraft,
@@ -603,42 +606,67 @@ const toggleCleanupStatus = (rawStatus: string) => {
     );
   };
 
-  const handleMoveAccount = async (
+  // 顶部/底部按全量列表定位，上移/下移仍按当前筛选结果取相邻账号。
+  const resolveAccountMovePlacement = (
     account: Account,
-    direction: "up" | "down",
-  ) => {
+    direction: AccountMoveDirection,
+  ): AccountMovePlacement | null => {
+    if (direction === "top" || direction === "bottom") {
+      const boundaryAccount =
+        direction === "top" ? accounts[0] : accounts[accounts.length - 1];
+      if (boundaryAccount?.id === account.id) {
+        toast.info(
+          direction === "top"
+            ? t("当前账号已经在最前面")
+            : t("当前账号已经在最后面"),
+        );
+        return null;
+      }
+      return { type: direction };
+    }
+
     const filteredIndex = filteredAccountIndexMap.get(account.id);
     if (filteredIndex == null) {
       toast.error(t("未找到当前账号，请刷新后重试"));
-      return;
+      return null;
     }
 
     const targetFilteredIndex =
       direction === "up" ? filteredIndex - 1 : filteredIndex + 1;
     if (targetFilteredIndex < 0) {
       toast.info(t("当前账号已经在最前面"));
-      return;
+      return null;
     }
     if (targetFilteredIndex >= filteredAccounts.length) {
       toast.info(t("当前账号已经在最后面"));
+      return null;
+    }
+
+    return {
+      type: direction === "up" ? "before" : "after",
+      anchorAccountId: filteredAccounts[targetFilteredIndex].id,
+    };
+  };
+
+  const handleMoveAccount = async (
+    account: Account,
+    direction: AccountMoveDirection,
+  ) => {
+    const placement = resolveAccountMovePlacement(account, direction);
+    if (!placement) {
       return;
     }
 
-    const targetAccount = filteredAccounts[targetFilteredIndex];
-    const reorderedAccounts = accounts.filter((item) => item.id !== account.id);
-    const anchorIndex = reorderedAccounts.findIndex(
-      (item) => item.id === targetAccount.id,
+    const reorderedAccounts = buildAccountsByMovedOrder(
+      accounts,
+      account,
+      placement,
     );
-    if (anchorIndex === -1) {
+    if (!reorderedAccounts) {
       toast.error(t("未找到目标账号，请刷新后重试"));
       return;
     }
 
-    reorderedAccounts.splice(
-      direction === "up" ? anchorIndex : anchorIndex + 1,
-      0,
-      account,
-    );
     const updates = buildAccountOrderUpdates(reorderedAccounts);
     if (!updates.length) {
       toast.info(t("账号顺序未变化"));

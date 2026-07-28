@@ -16,13 +16,13 @@
 
 <p align="center">
   <a href="https://github.com/qxcnm/Codex-Manager">
-    <img alt="GitHub 仓库" src="https://img.shields.io/badge/GitHub-%E4%BB%93%E5%BA%93-181717?logo=github&logoColor=white" />
+    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
   </a>
   <a href="https://atomgit.com/qxnm/Codex-Manager">
-    <img alt="AtomGit 仓库" src="https://img.shields.io/badge/AtomGit-%E4%BB%93%E5%BA%93-DA203E" />
+    <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
   </a>
   <a href="https://gitee.com/hongshungao/Codex-Manager">
-    <img alt="Gitee 仓库" src="https://img.shields.io/badge/Gitee-%E4%BB%93%E5%BA%93-C71D23?logo=gitee&logoColor=C71D23" />
+    <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
   </a>
 </p>
 
@@ -75,7 +75,7 @@
       </a>
     </td>
     <td valign="top">
-      感谢 <strong>AI夏末 AIXiamo</strong> 赞助本项目！国内没有海外银行卡？AIXiamo 提供 ChatGPT、Claude、Codex 等 AI 服务正规代充，支持支付宝 / 微信，售后有保障。可前往<a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">官网</a>查看服务。
+      <strong><a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=sponsor_text">AIXiamo（独立 AI 订阅服务）</a></strong>：提供 <a href="https://www.aixiamo.com/articles/codex-quota-not-enough-plus-pro-api-2026?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=developer_codex_quota">ChatGPT Plus / Pro 国内充值与 Codex 额度选择</a>，也覆盖 Claude Max 5x / 20x、Google AI Pro（Gemini）和 SuperGrok；支持支付宝，无需海外银行卡，订单状态可查询。
     </td>
   </tr>
   <tr>

@@ -3,8 +3,10 @@
 import type { Dispatch, SetStateAction } from "react";
 import {
   ArrowDown,
+  ArrowDownToLine,
   ArrowUp,
   ArrowUpDown,
+  ArrowUpToLine,
   BarChart3,
   Download,
   FileUp,
@@ -87,6 +89,7 @@ import { AccountProxyStatusHeader } from "@/components/accounts/account-proxy-st
 import {
   type AccountEditorState,
   type AccountExportMode,
+  type AccountMoveDirection,
   type AccountSizeSortMode,
   type DeleteDialogState,
   type StatusFilter,
@@ -225,7 +228,7 @@ export interface AccountsPageViewProps {
   openAccountEditor: (account: Account) => void;
   handleMoveAccount: (
     account: Account,
-    direction: "up" | "down",
+    direction: AccountMoveDirection,
   ) => Promise<void>;
   handleApplyAccountSizeSort: (mode: AccountSizeSortMode) => Promise<void>;
   handleConfirmAccountEditor: () => Promise<void>;
@@ -816,7 +819,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
 
       <Card className="glass-card mission-panel overflow-hidden py-0 shadow-sm">
         <CardContent className="p-0">
-          <Table>
+          <Table className="min-w-[1164px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-12 text-center">
@@ -899,6 +902,9 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                   const canMoveDown =
                     filteredIndex !== -1 &&
                     filteredIndex < filteredAccounts.length - 1;
+                  const isAtListTop = accounts[0]?.id === account.id;
+                  const isAtListBottom =
+                    accounts[accounts.length - 1]?.id === account.id;
                   return (
                     <TableRow key={account.id} className="group">
                       <TableCell className="text-center">
@@ -1040,6 +1046,40 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              <DropdownMenuGroup>
+                                <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground/80">
+                                  {t("排序")}
+                                </DropdownMenuLabel>
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  disabled={
+                                    !isServiceReady ||
+                                    isReorderingAccounts ||
+                                    isAtListTop
+                                  }
+                                  onClick={() =>
+                                    void handleMoveAccount(account, "top")
+                                  }
+                                >
+                                  <ArrowUpToLine className="h-4 w-4" />
+                                  {t("移到顶部")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  disabled={
+                                    !isServiceReady ||
+                                    isReorderingAccounts ||
+                                    isAtListBottom
+                                  }
+                                  onClick={() =>
+                                    void handleMoveAccount(account, "bottom")
+                                  }
+                                >
+                                  <ArrowDownToLine className="h-4 w-4" />
+                                  {t("移到底部")}
+                                </DropdownMenuItem>
+                              </DropdownMenuGroup>
+                              <DropdownMenuSeparator />
                                   <DropdownMenuGroup>
                               <DropdownMenuItem
                                 className="gap-2"
