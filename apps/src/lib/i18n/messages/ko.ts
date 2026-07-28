@@ -7,6 +7,7 @@ import { KO_ACCOUNTS_MESSAGES } from "./sections/ko-accounts";
 import { KO_API_KEYS_MESSAGES } from "./sections/ko-api-keys";
 import { KO_AGGREGATE_API_MESSAGES } from "./sections/ko-aggregate-api";
 import { KO_DASHBOARD_MESSAGES } from "./sections/ko-dashboard";
+import { KO_DESKTOP_DIAGNOSTICS_MESSAGES } from "./sections/ko-desktop-diagnostics";
 import { KO_DYNAMIC_UI_MESSAGES } from "./sections/ko-dynamic-ui";
 import { KO_MODEL_CATALOG_MESSAGES } from "./sections/ko-model-catalog";
 import { KO_MODEL_GROUPS_MESSAGES } from "./sections/ko-model-groups";
@@ -19,6 +20,7 @@ import { KO_SKILLS_MESSAGES } from "./sections/ko-skills";
 export const KO_MESSAGES: MessageCatalog = {
   ...KO_PROJECTS_MESSAGES,
   ...KO_SKILLS_MESSAGES,
+  ...KO_DESKTOP_DIAGNOSTICS_MESSAGES,
   仪表盘: "대시보드",
   概览: "개요",
   平台接入: "플랫폼 연결",
