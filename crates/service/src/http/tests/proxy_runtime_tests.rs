@@ -1,7 +1,7 @@
 use super::{
     build_backend_base_url, build_local_backend_client, front_proxy_max_blocking_threads,
-    front_proxy_worker_threads, normalize_incoming_request_body, proxy_handler, zstd_body_limit,
-    IncomingBodyDecodeError, ProxyState, ZSTD_MAX_BODY_BYTES,
+    front_proxy_worker_threads, normalize_incoming_request_body, proxy_handler,
+    IncomingBodyDecodeError, ProxyState,
 };
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
@@ -186,6 +186,39 @@ fn zstd_request_body_is_decoded_and_transport_headers_are_removed() {
 }
 
 #[test]
+fn default_front_proxy_limit_decodes_official_image_request_above_64_mib() {
+    const LEGACY_ZSTD_LIMIT: usize = 64 * 1024 * 1024;
+    let prefix = br#"{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"edit this image"},{"type":"input_image","image_url":"data:image/png;base64,"#;
+    let suffix = br#""}]}]}"#;
+    let target_len = LEGACY_ZSTD_LIMIT + 1;
+    let mut plain = Vec::with_capacity(target_len);
+    plain.extend_from_slice(prefix);
+    plain.resize(target_len - suffix.len(), b'A');
+    plain.extend_from_slice(suffix);
+    let compressed =
+        zstd::stream::encode_all(std::io::Cursor::new(&plain), 3).expect("compress image request");
+    assert!(
+        compressed.len() < LEGACY_ZSTD_LIMIT,
+        "fixture must reach the decompressed-size path"
+    );
+    let expected_len = plain.len();
+    drop(plain);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+
+    let decoded = normalize_body_for_test(
+        &mut headers,
+        Bytes::from(compressed),
+        /*max_body_bytes*/ 0,
+    )
+    .expect("default zero limit must preserve unbounded request behavior");
+
+    assert_eq!(decoded.len(), expected_len);
+    assert!(decoded.starts_with(prefix));
+    assert!(decoded.ends_with(suffix));
+}
+
+#[test]
 fn zstd_magic_is_decoded_when_intermediate_proxy_drops_encoding_header() {
     let plain = br#"{"model":"gpt-5.6-sol","stream":true}"#;
     let compressed =
@@ -237,14 +270,7 @@ fn decompressed_zstd_request_body_respects_front_proxy_limit() {
 }
 
 #[test]
-fn zstd_body_limit_is_always_bounded() {
-    assert_eq!(zstd_body_limit(0), ZSTD_MAX_BODY_BYTES);
-    assert_eq!(zstd_body_limit(32), 32);
-    assert_eq!(zstd_body_limit(usize::MAX), ZSTD_MAX_BODY_BYTES);
-}
-
-#[test]
-fn zero_front_proxy_limit_rejects_oversized_declared_zstd_body() {
+fn zero_front_proxy_limit_does_not_reject_large_declared_zstd_body() {
     let _guard = crate::test_env_guard();
     let _ = crate::gateway::front_proxy_max_body_bytes();
     let _body_limit_guard = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES", "0");
@@ -258,7 +284,7 @@ fn zero_front_proxy_limit_rejects_oversized_declared_zstd_body() {
         backend_base_url: "http://127.0.0.1:1".to_string(),
         client: build_local_backend_client().expect("client"),
     };
-    let oversized = ZSTD_MAX_BODY_BYTES.saturating_add(1);
+    let oversized = 64_u64 * 1024 * 1024 + 1;
     let request = HttpRequest::builder()
         .method("POST")
         .uri("/v1/responses")
@@ -268,7 +294,7 @@ fn zero_front_proxy_limit_rejects_oversized_declared_zstd_body() {
         .expect("request");
 
     let response = runtime.block_on(proxy_handler(State(state), request));
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
 
 /// 函数 `request_without_content_length_over_limit_returns_413`
