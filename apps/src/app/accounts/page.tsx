@@ -17,6 +17,7 @@ import {
   buildAccountOrderUpdates,
   type AccountEditorState,
   type DeleteDialogState,
+  getAccountStatusActionType,
   normalizeAccountPlanKey,
   normalizeTagsDraft,
   type StatusFilter,
@@ -49,21 +50,12 @@ function normalizeCleanupStatus(status: string): CleanupStatus | null {
     : null;
 }
 
-function normalizeAccountStatusValue(status: string): string {
-  return String(status || "").trim().toLowerCase();
-}
-
-function isManuallyClosedAccount(account: Account): boolean {
-  const statusReason = normalizeAccountStatusValue(account.statusReason);
-  return statusReason === "manual_disable";
-}
-
 function canBulkEnableAccount(account: Account): boolean {
-  return isManuallyClosedAccount(account);
+  return getAccountStatusActionType(account) === "enable";
 }
 
 function canBulkDisableAccount(account: Account): boolean {
-  return !isManuallyClosedAccount(account);
+  return getAccountStatusActionType(account) === "disable";
 }
 
 export default function AccountsPage() {
