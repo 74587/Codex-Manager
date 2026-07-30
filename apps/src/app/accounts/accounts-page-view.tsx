@@ -18,6 +18,8 @@ import {
   PencilLine,
   Pin,
   Plus,
+  Power,
+  PowerOff,
   RefreshCw,
   Search,
   Trash2,
@@ -138,6 +140,8 @@ export interface AccountsPageViewProps {
   visibleAccounts: Account[];
   filteredAccountIndexMap: Map<string, number>;
   effectiveSelectedIds: string[];
+  selectedEnableTargetCount: number;
+  selectedDisableTargetCount: number;
   addAccountModalOpen: boolean;
   usageModalOpen: boolean;
   exportDialogOpen: boolean;
@@ -181,6 +185,7 @@ export interface AccountsPageViewProps {
   isReorderingAccounts: boolean;
   isUpdatingProfileAccountId: string | null;
   isUpdatingStatusAccountId: string | null;
+  isUpdatingManyStatuses: boolean;
   statusFilterOptions: StatusFilterOption[];
   importFileActionLabel: string;
   importDirectoryActionLabel: string;
@@ -213,6 +218,8 @@ export interface AccountsPageViewProps {
   openUsage: (account: Account) => void;
   handleUsageModalOpenChange: (open: boolean) => void;
   handleDeleteSelected: () => void;
+  handleEnableSelected: () => void;
+  handleDisableSelected: () => void;
   openCleanupDialog: () => void;
   toggleCleanupStatus: (status: string) => void;
   handleConfirmCleanupStatuses: () => Promise<void>;
@@ -267,6 +274,8 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     visibleAccounts,
     filteredAccountIndexMap,
     effectiveSelectedIds,
+    selectedEnableTargetCount,
+    selectedDisableTargetCount,
     addAccountModalOpen,
     usageModalOpen,
     exportDialogOpen,
@@ -308,6 +317,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     isReorderingAccounts,
     isUpdatingProfileAccountId,
     isUpdatingStatusAccountId,
+    isUpdatingManyStatuses,
     statusFilterOptions,
     importFileActionLabel,
     importDirectoryActionLabel,
@@ -338,6 +348,8 @@ export function AccountsPageView(props: AccountsPageViewProps) {
     openUsage,
     handleUsageModalOpenChange,
     handleDeleteSelected,
+    handleEnableSelected,
+    handleDisableSelected,
     openCleanupDialog,
     toggleCleanupStatus,
     handleConfirmCleanupStatuses,
@@ -378,6 +390,8 @@ export function AccountsPageView(props: AccountsPageViewProps) {
       cleanupStatusDraft.includes(option.id) ? total + option.count : total,
     0,
   );
+  const statusMutationBusy =
+    isUpdatingManyStatuses || Boolean(isUpdatingStatusAccountId);
 
   return (
     <div className="space-y-6">
@@ -580,6 +594,52 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     {exportActionLabel}
                     <DropdownMenuShortcut>
                       {exportActionShortcut}
+                    </DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-[0.16em] text-muted-foreground/80">
+                    {t("批量状态")}
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem
+                    className="h-9 rounded-lg px-2"
+                    disabled={
+                      !isServiceReady ||
+                      effectiveSelectedIds.length === 0 ||
+                      selectedEnableTargetCount === 0 ||
+                      statusMutationBusy
+                    }
+                    onClick={handleEnableSelected}
+                  >
+                    {isUpdatingManyStatuses ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Power className="mr-2 h-4 w-4" />
+                    )}
+                    {t("批量开启选中账号")}
+                    <DropdownMenuShortcut>
+                      {selectedEnableTargetCount || "-"}
+                    </DropdownMenuShortcut>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="h-9 rounded-lg px-2"
+                    disabled={
+                      !isServiceReady ||
+                      effectiveSelectedIds.length === 0 ||
+                      selectedDisableTargetCount === 0 ||
+                      statusMutationBusy
+                    }
+                    onClick={handleDisableSelected}
+                  >
+                    {isUpdatingManyStatuses ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <PowerOff className="mr-2 h-4 w-4" />
+                    )}
+                    {t("批量关闭选中账号")}
+                    <DropdownMenuShortcut>
+                      {selectedDisableTargetCount || "-"}
                     </DropdownMenuShortcut>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
@@ -1137,6 +1197,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                                 className="gap-2"
                                 disabled={
                                   !isServiceReady ||
+                                  isUpdatingManyStatuses ||
                                   isUpdatingStatusAccountId === account.id ||
                                   statusAction.action === null
                                 }

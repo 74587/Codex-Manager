@@ -20,6 +20,7 @@ import {
   type AccountMoveDirection,
   type AccountMovePlacement,
   type DeleteDialogState,
+  getAccountStatusActionType,
   normalizeAccountPlanKey,
   normalizeTagsDraft,
   type StatusFilter,
@@ -50,6 +51,14 @@ function normalizeCleanupStatus(status: string): CleanupStatus | null {
   return CLEANUP_STATUSES.includes(normalized as CleanupStatus)
     ? (normalized as CleanupStatus)
     : null;
+}
+
+function canBulkEnableAccount(account: Account): boolean {
+  return getAccountStatusActionType(account) === "enable";
+}
+
+function canBulkDisableAccount(account: Account): boolean {
+  return getAccountStatusActionType(account) === "disable";
 }
 
 export default function AccountsPage() {
@@ -96,7 +105,9 @@ export default function AccountsPage() {
     updateAccountProfile,
     isUpdatingProfileAccountId,
     toggleAccountStatus,
+    toggleManyAccountStatuses,
     isUpdatingStatusAccountId,
+    isUpdatingManyStatuses,
   } = useAccounts();
   const isPageActive = useDesktopPageActive("/accounts/");
   usePageTransitionReady("/accounts/", !isServiceReady || !isLoading);
@@ -266,6 +277,27 @@ export default function AccountsPage() {
     () => selectedIds.filter((id) => accountIdSet.has(id)),
     [accountIdSet, selectedIds],
   );
+  const selectedAccounts = useMemo(
+    () =>
+      effectiveSelectedIds
+        .map((id) => accounts.find((account) => account.id === id))
+        .filter((account): account is Account => Boolean(account)),
+    [accounts, effectiveSelectedIds],
+  );
+  const selectedEnableTargetIds = useMemo(
+    () =>
+      selectedAccounts
+        .filter((account) => canBulkEnableAccount(account))
+        .map((account) => account.id),
+    [selectedAccounts],
+  );
+  const selectedDisableTargetIds = useMemo(
+    () =>
+      selectedAccounts
+        .filter((account) => canBulkDisableAccount(account))
+        .map((account) => account.id),
+    [selectedAccounts],
+  );
   const exportSelectionCount = effectiveSelectedIds.length;
   const exportTargetCount =
     exportSelectionCount > 0 ? exportSelectionCount : accounts.length;
@@ -362,6 +394,32 @@ export default function AccountsPage() {
       ids: [...effectiveSelectedIds],
       count: effectiveSelectedIds.length,
     });
+  };
+
+  const handleToggleSelectedStatus = async (enabled: boolean) => {
+    if (!effectiveSelectedIds.length) {
+      toast.error(t("请先选择账号"));
+      return;
+    }
+    const targetIds = enabled ? selectedEnableTargetIds : selectedDisableTargetIds;
+    if (targetIds.length === 0) {
+      toast.info(
+        enabled
+          ? t("当前选中账号没有可开启项")
+          : t("当前选中账号没有可关闭项"),
+      );
+      return;
+    }
+
+    try {
+      await toggleManyAccountStatuses(
+        targetIds,
+        enabled,
+        effectiveSelectedIds.length,
+      );
+    } catch {
+      // hook 内统一处理 toast，这里保留当前选择
+    }
   };
 
   const openCleanupDialog = () => {
@@ -802,6 +860,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
       visibleAccounts={visibleAccounts}
       filteredAccountIndexMap={filteredAccountIndexMap}
       effectiveSelectedIds={effectiveSelectedIds}
+      selectedEnableTargetCount={selectedEnableTargetIds.length}
+      selectedDisableTargetCount={selectedDisableTargetIds.length}
       addAccountModalOpen={addAccountModalOpen}
       usageModalOpen={usageModalOpen}
       exportDialogOpen={exportDialogOpen}
@@ -845,6 +905,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       isReorderingAccounts={isReorderingAccounts}
       isUpdatingProfileAccountId={isUpdatingProfileAccountId}
       isUpdatingStatusAccountId={isUpdatingStatusAccountId}
+      isUpdatingManyStatuses={isUpdatingManyStatuses}
       statusFilterOptions={statusFilterOptions}
       importFileActionLabel={importFileActionLabel}
       importDirectoryActionLabel={importDirectoryActionLabel}
@@ -877,6 +938,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
       openUsage={openUsage}
       handleUsageModalOpenChange={handleUsageModalOpenChange}
       handleDeleteSelected={handleDeleteSelected}
+      handleEnableSelected={() => void handleToggleSelectedStatus(true)}
+      handleDisableSelected={() => void handleToggleSelectedStatus(false)}
       openCleanupDialog={openCleanupDialog}
       toggleCleanupStatus={toggleCleanupStatus}
       handleConfirmCleanupStatuses={handleConfirmCleanupStatuses}
