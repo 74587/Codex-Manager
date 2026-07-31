@@ -2258,6 +2258,10 @@ impl Storage {
             |s| s.ensure_request_token_stats_usage_included_column(),
         )?;
         self.apply_gpt56_current_pricing_migration()?;
+        self.apply_sql_migration(
+            "127_model_catalog_cache_write_prices",
+            include_str!("../../migrations/127_model_catalog_cache_write_prices.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

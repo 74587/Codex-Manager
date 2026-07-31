@@ -53,6 +53,8 @@ pub struct ModelPriceV2 {
     #[serde(default)]
     pub cached_input_microusd_per_1m: Option<i64>,
     #[serde(default)]
+    pub cache_write_microusd_per_1m: Option<i64>,
+    #[serde(default)]
     pub output_microusd_per_1m: Option<i64>,
 }
 
@@ -180,6 +182,17 @@ fn stable_hash(value: &str) -> String {
         .collect()
 }
 
+fn connection_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for current in columns {
+        if current?.eq_ignore_ascii_case(column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn builtin_id(slug: &str) -> String {
     format!("builtin:{}", slug.trim().to_ascii_lowercase())
 }
@@ -204,18 +217,25 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
             "invalid price_status".to_string(),
         ));
     }
-    let rates = [
+    let required_rates = [
         price.input_microusd_per_1m,
         price.cached_input_microusd_per_1m,
         price.output_microusd_per_1m,
     ];
-    if rates.iter().flatten().any(|rate| *rate < 0) {
+    if required_rates.iter().flatten().any(|rate| *rate < 0)
+        || price
+            .cache_write_microusd_per_1m
+            .is_some_and(|rate| rate < 0)
+    {
         return Err(rusqlite::Error::InvalidParameterName(
             "model prices cannot be negative".to_string(),
         ));
     }
     if status == "missing" {
-        if rates.iter().any(Option::is_some) || !model.price_tiers.is_empty() {
+        if required_rates.iter().any(Option::is_some)
+            || price.cache_write_microusd_per_1m.is_some()
+            || !model.price_tiers.is_empty()
+        {
             return Err(rusqlite::Error::InvalidParameterName(
                 "missing price must not contain rates or tiers".to_string(),
             ));
@@ -227,7 +247,7 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
         }
         return Ok(());
     }
-    if rates.iter().any(Option::is_none) {
+    if required_rates.iter().any(Option::is_none) {
         return Err(rusqlite::Error::InvalidParameterName(
             "priced model requires input, cached input, and output rates".to_string(),
         ));
@@ -243,6 +263,7 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
         })?;
     if Some(base.input_microusd_per_1m) != price.input_microusd_per_1m
         || Some(base.cached_input_microusd_per_1m) != price.cached_input_microusd_per_1m
+        || base.cache_write_microusd_per_1m != price.cache_write_microusd_per_1m
         || Some(base.output_microusd_per_1m) != price.output_microusd_per_1m
     {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -254,6 +275,9 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
         if tier.min_input_tokens < 0
             || tier.input_microusd_per_1m < 0
             || tier.cached_input_microusd_per_1m < 0
+            || tier
+                .cache_write_microusd_per_1m
+                .is_some_and(|rate| rate < 0)
             || tier.output_microusd_per_1m < 0
             || !thresholds.insert(tier.min_input_tokens)
         {
@@ -347,7 +371,8 @@ fn map_model(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<ManagedModelV
             price_source: row.get(24)?,
             input_microusd_per_1m: row.get(25)?,
             cached_input_microusd_per_1m: row.get(26)?,
-            output_microusd_per_1m: row.get(27)?,
+            cache_write_microusd_per_1m: row.get(27)?,
+            output_microusd_per_1m: row.get(28)?,
         },
         price_tiers: Vec::new(),
         routes: Vec::new(),
@@ -365,13 +390,13 @@ const MODEL_SELECT: &str = "SELECT
     m.max_context_window,m.default_reasoning_effort,m.capabilities_json,
     m.instructions_mode,m.instructions_text,m.builtin_revision,m.user_edited,m.created_at,m.updated_at,
     p.price_status,p.price_source,p.input_microusd_per_1m,p.cached_input_microusd_per_1m,
-    p.output_microusd_per_1m
+    p.cache_write_microusd_per_1m,p.output_microusd_per_1m
   FROM models m JOIN model_prices p ON p.model_id=m.id";
 
 fn list_tiers(conn: &Connection, model_id: &str) -> Result<Vec<ModelPriceTierV2>> {
     let mut stmt = conn.prepare(
         "SELECT min_input_tokens,input_microusd_per_1m,cached_input_microusd_per_1m,
-                output_microusd_per_1m
+                cache_write_microusd_per_1m,output_microusd_per_1m
          FROM model_price_tiers WHERE model_id=?1 ORDER BY min_input_tokens ASC",
     )?;
     stmt.query_map([model_id], |row| {
@@ -379,7 +404,8 @@ fn list_tiers(conn: &Connection, model_id: &str) -> Result<Vec<ModelPriceTierV2>
             min_input_tokens: row.get(0)?,
             input_microusd_per_1m: row.get(1)?,
             cached_input_microusd_per_1m: row.get(2)?,
-            output_microusd_per_1m: row.get(3)?,
+            cache_write_microusd_per_1m: row.get(3)?,
+            output_microusd_per_1m: row.get(4)?,
         })
     })?
     .collect()
@@ -470,7 +496,7 @@ fn insert_seed(
         .price_tiers
         .iter()
         .find(|tier| tier.min_input_tokens == 0);
-    conn.execute(
+    let inserted_price = conn.execute(
         "INSERT OR IGNORE INTO model_prices (
            model_id,currency,input_microusd_per_1m,cached_input_microusd_per_1m,
            output_microusd_per_1m,price_status,price_source,created_at,updated_at
@@ -485,8 +511,16 @@ fn insert_seed(
             now
         ],
     )?;
-    for tier in &seed.price_tiers {
+    let has_cache_write_price =
+        connection_has_column(conn, "model_prices", "cache_write_microusd_per_1m")?;
+    if inserted_price > 0 && has_cache_write_price {
         conn.execute(
+            "UPDATE model_prices SET cache_write_microusd_per_1m=?2 WHERE model_id=?1",
+            params![id, base.and_then(|tier| tier.cache_write_microusd_per_1m)],
+        )?;
+    }
+    for tier in &seed.price_tiers {
+        let inserted_tier = conn.execute(
             "INSERT OR IGNORE INTO model_price_tiers (
                model_id,min_input_tokens,input_microusd_per_1m,
                cached_input_microusd_per_1m,output_microusd_per_1m
@@ -499,6 +533,13 @@ fn insert_seed(
                 tier.output_microusd_per_1m
             ],
         )?;
+        if inserted_tier > 0 && has_cache_write_price {
+            conn.execute(
+                "UPDATE model_price_tiers SET cache_write_microusd_per_1m=?3
+                 WHERE model_id=?1 AND min_input_tokens=?2",
+                params![id, tier.min_input_tokens, tier.cache_write_microusd_per_1m],
+            )?;
+        }
     }
     let route = ModelRouteV2 {
         source_kind: "account_pool".to_string(),
@@ -940,10 +981,12 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
     )?;
     tx.execute(
         "INSERT INTO model_prices(model_id,currency,input_microusd_per_1m,
-           cached_input_microusd_per_1m,output_microusd_per_1m,price_status,price_source,
-           created_at,updated_at) VALUES(?1,'USD',?2,?3,?4,?5,?6,?7,?8)
+           cached_input_microusd_per_1m,cache_write_microusd_per_1m,
+           output_microusd_per_1m,price_status,price_source,created_at,updated_at)
+         VALUES(?1,'USD',?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(model_id) DO UPDATE SET input_microusd_per_1m=excluded.input_microusd_per_1m,
            cached_input_microusd_per_1m=excluded.cached_input_microusd_per_1m,
+           cache_write_microusd_per_1m=excluded.cache_write_microusd_per_1m,
            output_microusd_per_1m=excluded.output_microusd_per_1m,
            price_status=excluded.price_status,price_source=excluded.price_source,
            updated_at=excluded.updated_at",
@@ -951,6 +994,7 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
             id,
             model.price.input_microusd_per_1m,
             model.price.cached_input_microusd_per_1m,
+            model.price.cache_write_microusd_per_1m,
             model.price.output_microusd_per_1m,
             model.price.price_status,
             model.price.price_source,
@@ -962,12 +1006,14 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
     for tier in &model.price_tiers {
         tx.execute(
             "INSERT INTO model_price_tiers(model_id,min_input_tokens,input_microusd_per_1m,
-            cached_input_microusd_per_1m,output_microusd_per_1m) VALUES(?1,?2,?3,?4,?5)",
+            cached_input_microusd_per_1m,cache_write_microusd_per_1m,
+            output_microusd_per_1m) VALUES(?1,?2,?3,?4,?5,?6)",
             params![
                 id,
                 tier.min_input_tokens,
                 tier.input_microusd_per_1m,
                 tier.cached_input_microusd_per_1m,
+                tier.cache_write_microusd_per_1m,
                 tier.output_microusd_per_1m
             ],
         )?;
@@ -1710,7 +1756,7 @@ mod tests {
         let raw = include_str!("../../seeds/model_catalog_v2_2026_07_10.json");
         let value: Value = serde_json::from_str(raw).expect("parse fixture");
         assert_eq!(value["models"].as_array().map(Vec::len), Some(9));
-        assert_eq!(value["revision"].as_i64(), Some(6));
+        assert_eq!(value["revision"].as_i64(), Some(7));
         assert!(!raw.contains("base_instructions"));
         assert!(!raw.contains("instructions_template"));
         assert!(!raw.contains("instructions_text"));
@@ -1781,32 +1827,48 @@ mod tests {
                 .count(),
             1
         );
-        for (slug, input, cached, output, long_input, long_cached, long_output) in [
+        for (
+            slug,
+            input,
+            cached,
+            cache_write,
+            output,
+            long_input,
+            long_cached,
+            long_cache_write,
+            long_output,
+        ) in [
             (
                 "gpt-5.6-sol",
                 5_000_000,
                 500_000,
+                6_250_000,
                 30_000_000,
                 10_000_000,
                 1_000_000,
+                12_500_000,
                 45_000_000,
             ),
             (
                 "gpt-5.6-terra",
                 2_000_000,
                 200_000,
+                2_500_000,
                 12_000_000,
                 4_000_000,
                 400_000,
+                5_000_000,
                 18_000_000,
             ),
             (
                 "gpt-5.6-luna",
                 200_000,
                 20_000,
+                250_000,
                 1_200_000,
                 400_000,
                 40_000,
+                500_000,
                 1_800_000,
             ),
         ] {
@@ -1818,13 +1880,18 @@ mod tests {
             );
             assert_eq!(model.price.input_microusd_per_1m, Some(input));
             assert_eq!(model.price.cached_input_microusd_per_1m, Some(cached));
+            assert_eq!(model.price.cache_write_microusd_per_1m, Some(cache_write));
             assert_eq!(model.price.output_microusd_per_1m, Some(output));
             assert_eq!(model.price_tiers.len(), 2);
-            assert_eq!(model.price_tiers[1].min_input_tokens, 272_000);
+            assert_eq!(model.price_tiers[1].min_input_tokens, 272_001);
             assert_eq!(model.price_tiers[1].input_microusd_per_1m, long_input);
             assert_eq!(
                 model.price_tiers[1].cached_input_microusd_per_1m,
                 long_cached
+            );
+            assert_eq!(
+                model.price_tiers[1].cache_write_microusd_per_1m,
+                Some(long_cache_write)
             );
             assert_eq!(model.price_tiers[1].output_microusd_per_1m, long_output);
         }
@@ -1835,7 +1902,7 @@ mod tests {
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(6));
+        assert_eq!(sol.builtin_revision, Some(7));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["tool_mode"], "code_mode_only");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
@@ -1845,7 +1912,7 @@ mod tests {
             .find(|model| model.slug == "gpt-image-2")
             .unwrap();
         assert_eq!(image.display_name, "GPT Image 2");
-        assert_eq!(image.builtin_revision, Some(6));
+        assert_eq!(image.builtin_revision, Some(7));
         assert_eq!(image.context_window, None);
         assert_eq!(image.max_context_window, None);
         assert_eq!(image.default_reasoning_effort, None);
@@ -1882,7 +1949,60 @@ mod tests {
     }
 
     #[test]
-    fn revision_six_seeds_image_model_into_an_existing_revision_four_catalog() {
+    fn cache_write_price_migration_preserves_custom_gpt56_prices() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE models(
+               id TEXT PRIMARY KEY,slug TEXT,origin TEXT,user_edited INTEGER,
+               builtin_revision INTEGER,updated_at INTEGER
+             );
+             CREATE TABLE model_prices(
+               model_id TEXT PRIMARY KEY,price_status TEXT,price_source TEXT,
+               input_microusd_per_1m INTEGER,cached_input_microusd_per_1m INTEGER,
+               output_microusd_per_1m INTEGER,updated_at INTEGER
+             );
+             CREATE TABLE model_price_tiers(
+               model_id TEXT,min_input_tokens INTEGER,input_microusd_per_1m INTEGER,
+               cached_input_microusd_per_1m INTEGER,output_microusd_per_1m INTEGER
+             );
+             CREATE TABLE request_charge_snapshots(input_microusd_per_1m INTEGER);
+             CREATE TABLE model_catalog_v2_meta(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO models VALUES('terra','gpt-5.6-terra','builtin',1,6,1);
+             INSERT INTO model_prices VALUES(
+               'terra','custom','local-ui',9000000,8000000,7000000,1
+             );
+             INSERT INTO model_price_tiers VALUES('terra',0,9000000,8000000,7000000);
+             INSERT INTO request_charge_snapshots VALUES(1234567);",
+        )
+        .unwrap();
+
+        conn.execute_batch(include_str!(
+            "../../migrations/127_model_catalog_cache_write_prices.sql"
+        ))
+        .unwrap();
+
+        let (price, revision): (Option<i64>, i64) = conn
+            .query_row(
+                "SELECT p.cache_write_microusd_per_1m,m.builtin_revision
+                 FROM model_prices p JOIN models m ON m.id=p.model_id",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(price, None);
+        assert_eq!(revision, 6);
+        let snapshot_rate: i64 = conn
+            .query_row(
+                "SELECT cache_write_microusd_per_1m FROM request_charge_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshot_rate, 1_234_567);
+    }
+
+    #[test]
+    fn revision_seven_seeds_image_model_into_an_existing_revision_four_catalog() {
         let storage = storage();
         storage
             .conn
@@ -1911,7 +2031,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(image.origin, "builtin");
-        assert_eq!(image.builtin_revision, Some(6));
+        assert_eq!(image.builtin_revision, Some(7));
         assert_eq!(image.routes.len(), 1);
         assert_eq!(image.routes[0].upstream_model, "gpt-image-2");
         let sol = storage
@@ -1927,7 +2047,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(revision, "6");
+        assert_eq!(revision, "7");
     }
 
     #[test]
@@ -1986,7 +2106,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(restored.origin, "builtin");
-        assert_eq!(restored.builtin_revision, Some(6));
+        assert_eq!(restored.builtin_revision, Some(7));
         assert_eq!(restored.routes[0].upstream_model, "gpt-image-2");
     }
 
@@ -2042,7 +2162,7 @@ mod tests {
         assert_eq!(sol.price.cached_input_microusd_per_1m, Some(5_000_000));
         assert_eq!(sol.price.output_microusd_per_1m, Some(30_000_000));
         assert_eq!(sol.price_tiers.len(), 1);
-        assert_eq!(sol.builtin_revision, Some(6));
+        assert_eq!(sol.builtin_revision, Some(7));
 
         let terra = storage
             .get_managed_model_v2("gpt-5.6-terra")
@@ -2411,7 +2531,7 @@ mod tests {
             .get_managed_model_v2("gpt-5.6-sol")
             .unwrap()
             .unwrap();
-        assert_eq!(sol.builtin_revision, Some(6));
+        assert_eq!(sol.builtin_revision, Some(7));
         assert_eq!(sol.capabilities["multi_agent_version"], "v2");
         assert_eq!(sol.capabilities["use_responses_lite"], true);
 
@@ -2688,6 +2808,12 @@ mod tests {
         storage
             .apply_model_catalog_v2_migration()
             .expect("migrate partial legacy schema");
+        storage
+            .conn
+            .execute_batch(include_str!(
+                "../../migrations/127_model_catalog_cache_write_prices.sql"
+            ))
+            .expect("add cache-write pricing schema");
 
         assert_eq!(
             storage
