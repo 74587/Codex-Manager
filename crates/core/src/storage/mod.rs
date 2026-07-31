@@ -2257,6 +2257,7 @@ impl Storage {
             include_str!("../../migrations/125_request_token_stats_successful_usage.sql"),
             |s| s.ensure_request_token_stats_usage_included_column(),
         )?;
+        self.apply_gpt56_current_pricing_migration()?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;
