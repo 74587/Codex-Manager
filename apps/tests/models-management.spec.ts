@@ -86,8 +86,8 @@ type MockState = {
 
 const PRICED_MODELS: Record<string, [number, number, number]> = {
   "gpt-5.6-sol": [5_000_000, 500_000, 30_000_000],
-  "gpt-5.6-terra": [2_500_000, 250_000, 15_000_000],
-  "gpt-5.6-luna": [1_000_000, 100_000, 6_000_000],
+  "gpt-5.6-terra": [2_000_000, 200_000, 12_000_000],
+  "gpt-5.6-luna": [200_000, 20_000, 1_200_000],
   "gpt-5.5": [5_000_000, 500_000, 30_000_000],
   "gpt-5.4": [2_500_000, 250_000, 15_000_000],
   "gpt-5.4-mini": [750_000, 75_000, 4_500_000],
@@ -172,7 +172,7 @@ function builtinModel(
         },
     instructionsMode: "passthrough",
     instructionsText: null,
-    builtinRevision: isImageModel ? 5 : slug.startsWith("gpt-5.6") ? 4 : 2,
+    builtinRevision: isImageModel ? 6 : slug.startsWith("gpt-5.6") ? 6 : 2,
     userEdited: false,
     price,
     priceTiers: rates
