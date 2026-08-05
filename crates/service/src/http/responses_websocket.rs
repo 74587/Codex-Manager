@@ -295,22 +295,64 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         }
     };
 
-    let mut upstream =
-        match connect_upstream_websocket(&context, prepared_first.model.as_deref()).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
-                return;
-            }
-        };
+    let mut first_log = begin_ws_request_log(
+        &context,
+        &prepared_first,
+        "unresolved",
+        "initial_upstream_connect",
+    );
+    let connect_timeout =
+        crate::gateway::current_upstream_connect_timeout().max(std::time::Duration::from_secs(1));
+    let connect_result = tokio::time::timeout(
+        connect_timeout,
+        connect_upstream_websocket(&context, prepared_first.model.as_deref()),
+    )
+    .await;
+    let mut upstream = match connect_result {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            finalize_ws_request_log(
+                &context,
+                &first_log,
+                None,
+                None,
+                err.status,
+                crate::gateway::RequestLogUsage::default(),
+                Some(err.message.clone()),
+            );
+            send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
+            return;
+        }
+        Err(_) => {
+            let err = WsSessionError::new(
+                504,
+                RESPONSES_WS_ERROR_CODE,
+                crate::gateway::bilingual_error(
+                    "连接上游 WebSocket 超时",
+                    format!(
+                        "connect upstream websocket timed out after {} ms",
+                        connect_timeout.as_millis()
+                    ),
+                ),
+            );
+            finalize_ws_request_log(
+                &context,
+                &first_log,
+                None,
+                None,
+                err.status,
+                crate::gateway::RequestLogUsage::default(),
+                Some(err.message.clone()),
+            );
+            send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
+            return;
+        }
+    };
+    first_log.route_strategy = Some(upstream.route_strategy.to_string());
+    first_log.route_source = Some(upstream.route_source.to_string());
     let first_attempted_account_ids = HashSet::from([upstream.account_id.clone()]);
     let first_pending = PendingWsRequestState {
-        log: begin_ws_request_log(
-            &context,
-            &prepared_first,
-            upstream.route_strategy,
-            upstream.route_source,
-        ),
+        log: first_log,
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
         buffered_upstream_preamble: Vec::new(),
