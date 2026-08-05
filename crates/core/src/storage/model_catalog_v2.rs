@@ -2008,7 +2008,7 @@ mod tests {
              INSERT INTO models(id) VALUES('existing');",
         )
         .unwrap();
-        conn.execute_batch(include_str!("../../migrations/128_model_fast_policy.sql"))
+        conn.execute_batch(include_str!("../../migrations/129_model_fast_policy.sql"))
             .unwrap();
 
         let policy: String = conn
@@ -2905,7 +2905,7 @@ mod tests {
             .expect("add cache-write pricing schema");
         storage
             .conn
-            .execute_batch(include_str!("../../migrations/128_model_fast_policy.sql"))
+            .execute_batch(include_str!("../../migrations/129_model_fast_policy.sql"))
             .expect("add model fast policy schema");
 
         assert_eq!(

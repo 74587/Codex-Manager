@@ -2332,6 +2332,8 @@ pub(super) fn build_local_validation_result(
             allow_codex_compat_rewrite,
         )
     };
+    body =
+        super::super::align_existing_prompt_cache_key_with_native_anchor(body, &incoming_headers);
     let (next_body, fast_policy_applied) = apply_model_fast_policy(
         &storage,
         instruction_model,
