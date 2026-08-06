@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{Signal, System};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,18 +29,92 @@ impl CodexRuntimeReloadResult {
 
 pub(crate) fn reload_codex_app_servers(codex_home: &Path) -> CodexRuntimeReloadResult {
     let system = System::new_all();
-    let candidate_pids = system
+    let candidate_pids = matching_app_server_pids(&system, codex_home, |_| true);
+    signal_root_processes(
+        &system,
+        candidate_pids,
+        "No matching Codex app-server process was running; new clients will read the updated configuration",
+        "Sent a reload signal to {count} Codex app-server process(es); owning clients may restart them",
+    )
+}
+
+/// Reload only app-server processes that started before the active profile's
+/// configuration was written. Codex app-server reads provider capabilities at
+/// process start, so an already-running process can keep the old
+/// `supports_websockets` value even after Manager repairs `config.toml`.
+pub(crate) fn reload_stale_codex_app_servers(
+    codex_home: &Path,
+    config_path: &Path,
+) -> CodexRuntimeReloadResult {
+    let config_modified_at = match fs::metadata(config_path)
+        .and_then(|metadata| metadata.modified())
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return CodexRuntimeReloadResult {
+                requested: true,
+                matched_process_count: 0,
+                signaled_process_count: 0,
+                warnings: vec![format!(
+                    "could not read Codex profile config mtime at {}: {err}",
+                    config_path.display()
+                )],
+                message: "Skipped stale Codex app-server reload because the profile config timestamp was unavailable".to_string(),
+            };
+        }
+    };
+    let Some(config_modified_secs) = unix_timestamp_secs(config_modified_at) else {
+        return CodexRuntimeReloadResult {
+            requested: true,
+            matched_process_count: 0,
+            signaled_process_count: 0,
+            warnings: vec![format!(
+                "profile config mtime at {} predates the Unix epoch",
+                config_path.display()
+            )],
+            message: "Skipped stale Codex app-server reload because the profile config timestamp was invalid".to_string(),
+        };
+    };
+
+    let system = System::new_all();
+    let candidate_pids = matching_app_server_pids(&system, codex_home, |process| {
+        process_started_at_or_before_config(process.start_time(), config_modified_secs)
+    });
+    signal_root_processes(
+        &system,
+        candidate_pids,
+        "No stale Codex app-server process was running; current clients already started after the profile config",
+        "Sent a stale-runtime reload signal to {count} Codex app-server process(es); owning clients may restart them",
+    )
+}
+
+fn matching_app_server_pids<F>(
+    system: &System,
+    codex_home: &Path,
+    mut include: F,
+) -> HashSet<sysinfo::Pid>
+where
+    F: FnMut(&sysinfo::Process) -> bool,
+{
+    system
         .processes()
         .iter()
         .filter_map(|(pid, process)| {
-            if !is_codex_app_server_command(process.cmd()) {
+            if !is_codex_app_server_command(process.cmd()) || !include(process) {
                 return None;
             }
             let process_home = resolve_codex_home_from_environment(process.environ())?;
             same_path(&process_home, codex_home).then_some(*pid)
         })
-        .collect::<HashSet<_>>();
+        .collect()
+}
 
+fn signal_root_processes(
+    system: &System,
+    candidate_pids: HashSet<sysinfo::Pid>,
+    no_match_message: &str,
+    signaled_message_template: &str,
+) -> CodexRuntimeReloadResult {
     let root_pids = candidate_pids
         .iter()
         .copied()
@@ -71,15 +147,12 @@ pub(crate) fn reload_codex_app_servers(codex_home: &Path) -> CodexRuntimeReloadR
 
     let matched_process_count = candidate_pids.len();
     let message = if matched_process_count == 0 {
-        "No matching Codex app-server process was running; new clients will read the updated configuration"
-            .to_string()
+        no_match_message.to_string()
     } else if signaled_process_count == 0 {
         "Matching Codex app-server processes were found, but none accepted the reload signal"
             .to_string()
     } else {
-        format!(
-            "Sent a reload signal to {signaled_process_count} Codex app-server process(es); owning clients may restart them"
-        )
+        signaled_message_template.replace("{count}", &signaled_process_count.to_string())
     };
 
     CodexRuntimeReloadResult {
@@ -89,6 +162,20 @@ pub(crate) fn reload_codex_app_servers(codex_home: &Path) -> CodexRuntimeReloadR
         warnings,
         message,
     }
+}
+
+fn unix_timestamp_secs(value: SystemTime) -> Option<u64> {
+    value
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+}
+
+fn process_started_at_or_before_config(process_start_secs: u64, config_modified_secs: u64) -> bool {
+    // sysinfo exposes process start time with second precision. Treat an
+    // equal-second process as stale too: it may have started before the
+    // atomic config replacement but cannot be ordered more precisely here.
+    process_start_secs > 0 && process_start_secs <= config_modified_secs
 }
 
 fn is_codex_app_server_command(command: &[String]) -> bool {
@@ -230,5 +317,35 @@ mod tests {
             resolve_codex_home_from_environment(&environment),
             Some(PathBuf::from("/home/test/.codex"))
         );
+    }
+
+    #[test]
+    fn stale_runtime_predicate_only_matches_processes_started_at_or_before_config() {
+        assert!(process_started_at_or_before_config(1, 2));
+        assert!(process_started_at_or_before_config(2, 2));
+        assert!(!process_started_at_or_before_config(3, 2));
+        assert!(!process_started_at_or_before_config(0, 2));
+    }
+
+    #[test]
+    fn unix_timestamp_rejects_pre_epoch_values() {
+        assert_eq!(unix_timestamp_secs(UNIX_EPOCH), Some(0));
+        assert_eq!(
+            unix_timestamp_secs(UNIX_EPOCH - std::time::Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_reload_reports_missing_profile_config_without_signaling() {
+        let config_path = std::env::temp_dir().join(format!(
+            "codexmanager-missing-profile-config-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&config_path);
+        let result = reload_stale_codex_app_servers(Path::new("/tmp/does-not-exist"), &config_path);
+        assert_eq!(result.matched_process_count, 0);
+        assert_eq!(result.signaled_process_count, 0);
+        assert!(result.message.contains("timestamp was unavailable"));
     }
 }

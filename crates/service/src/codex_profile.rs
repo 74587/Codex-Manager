@@ -2084,6 +2084,40 @@ pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Res
     Ok(true)
 }
 
+pub(crate) fn sync_active_gateway_profile_config_from_storage(
+    storage: &Storage,
+) -> Result<bool, String> {
+    let Some(state) = load_state() else {
+        return Ok(false);
+    };
+    if !matches!(state.mode, CodexProfileMode::Gateway) {
+        return Ok(false);
+    }
+
+    let profile_dir = PathBuf::from(state.profile_dir);
+    let paths = managed_profile_paths(&profile_dir)?;
+    let api_key_id = state
+        .api_key_id
+        .as_deref()
+        .ok_or_else(|| "active gateway profile is missing api key id".to_string())?;
+    let supports_websockets = gateway_supports_websockets(storage, api_key_id)?;
+    let gateway_base_url = normalize_gateway_base_url(state.gateway_base_url.as_deref());
+    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+    let config_toml = patch_config_for_gateway(
+        current_config,
+        &gateway_base_url,
+        &paths.gateway_model_catalog_path,
+        supports_websockets,
+    )?;
+    write_atomic(&profile_dir.join(CONFIG_FILE), &config_toml)?;
+    Ok(true)
+}
+
+pub(crate) fn active_gateway_profile_dir() -> Option<PathBuf> {
+    let state = load_state()?;
+    matches!(state.mode, CodexProfileMode::Gateway).then(|| PathBuf::from(state.profile_dir))
+}
+
 pub(crate) fn sync_active_gateway_profile_for_api_key(
     storage: &Storage,
     api_key_id: &str,
