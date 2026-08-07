@@ -72,7 +72,6 @@ pub fn start_server(addr: &str) -> std::io::Result<()> {
     crate::storage_helpers::initialize_storage()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     crate::sync_runtime_settings_from_storage();
-    sync_active_gateway_profile_config_on_startup();
     crate::app_settings::ensure_codex_latest_version_sync();
     crate::usage_refresh::ensure_usage_polling();
     crate::usage_refresh::ensure_gateway_keepalive();
@@ -80,43 +79,4 @@ pub fn start_server(addr: &str) -> std::io::Result<()> {
     crate::usage_refresh::ensure_warmup_cron();
     crate::plugin::ensure_plugin_scheduler();
     crate::http::server::start_http(addr)
-}
-
-pub(crate) fn sync_active_gateway_profile_config_on_startup() -> bool {
-    let Some(storage) = crate::storage_helpers::open_storage() else {
-        log::warn!(
-            "event=sync_active_gateway_profile_on_startup_skipped reason=storage_unavailable"
-        );
-        return false;
-    };
-    match crate::codex_profile::sync_active_gateway_profile_config_from_storage(&storage) {
-        Ok(synced) => {
-            if synced {
-                log::info!("event=sync_active_gateway_profile_on_startup_succeeded");
-                if let Some(profile_dir) = crate::codex_profile::active_gateway_profile_dir() {
-                    let config_path = profile_dir.join("config.toml");
-                    let reload = crate::codex_runtime::reload_stale_codex_app_servers(
-                        &profile_dir,
-                        &config_path,
-                    );
-                    log::info!(
-                        "event=reload_stale_codex_app_servers_on_startup matched_process_count={} signaled_process_count={} message={}",
-                        reload.matched_process_count,
-                        reload.signaled_process_count,
-                        reload.message
-                    );
-                    for warning in reload.warnings {
-                        log::warn!(
-                            "event=reload_stale_codex_app_servers_on_startup_warning warning={warning}"
-                        );
-                    }
-                }
-            }
-            synced
-        }
-        Err(err) => {
-            log::warn!("event=sync_active_gateway_profile_on_startup_failed error={err}");
-            false
-        }
-    }
 }

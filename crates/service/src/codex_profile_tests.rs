@@ -1,5 +1,5 @@
 use super::*;
-use codexmanager_core::storage::{Account, ApiKey, Storage};
+use codexmanager_core::storage::{Account, Storage};
 use rusqlite::Connection;
 
 fn temp_profile(name: &str) -> PathBuf {
@@ -237,84 +237,6 @@ custom_header = "custom-value"
         provider.get("supports_websockets").and_then(Item::as_bool),
         Some(true)
     );
-}
-
-#[test]
-fn startup_resync_activates_websocket_for_existing_official_gateway_profile() {
-    let _lock = crate::test_env_guard();
-    let dir = temp_profile("startup-websocket-profile-sync");
-    let profile_dir = dir.join("codex-home");
-    fs::create_dir_all(&profile_dir).expect("create profile dir");
-    let _db_guard = set_test_db(&dir);
-    let storage = Storage::open(dir.join("codexmanager.db")).expect("open storage");
-    storage
-        .insert_api_key(&ApiKey {
-            id: "gk-startup-websocket".to_string(),
-            name: Some("startup websocket".to_string()),
-            model_slug: None,
-            reasoning_effort: None,
-            service_tier: None,
-            rotation_strategy: crate::apikey_profile::ROTATION_ACCOUNT.to_string(),
-            aggregate_api_id: None,
-            account_plan_filter: None,
-            aggregate_api_url: None,
-            client_type: "codex".to_string(),
-            protocol_type: crate::apikey_profile::PROTOCOL_OPENAI_COMPAT.to_string(),
-            auth_scheme: "authorization_bearer".to_string(),
-            upstream_base_url: None,
-            static_headers_json: None,
-            key_hash: "startup-websocket-hash".to_string(),
-            status: "active".to_string(),
-            created_at: now_ts(),
-            last_used_at: None,
-        })
-        .expect("insert gateway api key");
-    let state = ManagedState {
-        profile_dir: profile_key(&profile_dir),
-        mode: CodexProfileMode::Gateway,
-        account_id: None,
-        api_key_id: Some("gk-startup-websocket".to_string()),
-        gateway_base_url: Some("http://localhost:48760/v1".to_string()),
-        provider_id: PROVIDER_ID.to_string(),
-        previous_model_catalog_json: None,
-        updated_at: now_ts(),
-    };
-    storage
-        .set_app_setting(
-            APP_SETTING_STATE_KEY,
-            &serde_json::to_string(&state).expect("serialize state"),
-            now_ts(),
-        )
-        .expect("save active gateway state");
-    fs::write(
-        profile_dir.join(CONFIG_FILE),
-        r#"model_provider = "cm"
-
-[model_providers.cm]
-name = "OpenAI"
-base_url = "http://localhost:48760/v1"
-wire_api = "responses"
-#supports_websockets = true
-"#,
-    )
-    .expect("write legacy gateway config");
-    drop(storage);
-
-    assert!(crate::lifecycle::startup::sync_active_gateway_profile_config_on_startup());
-
-    let updated = fs::read_to_string(profile_dir.join(CONFIG_FILE)).expect("read synced config");
-    let doc = parse_config(&updated).expect("parse synced config");
-    let provider = doc
-        .get("model_providers")
-        .and_then(Item::as_table)
-        .and_then(|providers| providers.get(PROVIDER_ID))
-        .and_then(Item::as_table)
-        .expect("managed provider");
-    assert_eq!(
-        provider.get("supports_websockets").and_then(Item::as_bool),
-        Some(true)
-    );
-    cleanup_profile(&dir);
 }
 
 #[test]
