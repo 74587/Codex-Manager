@@ -790,10 +790,10 @@ fn websocket_proxy_url_for_account_prefers_routed_account_proxy_over_system_prox
 }
 
 #[test]
-fn websocket_proxy_url_for_account_uses_system_proxy_without_account_proxy() {
+fn websocket_proxy_url_for_account_prefers_managed_proxy_over_environment() {
     let _guard = crate::test_env_guard();
-    let db = TestDbGuard::new("runtime-websocket-system-proxy-fallback");
-    seed_account(db.path(), "acc-system");
+    let db = TestDbGuard::new("runtime-websocket-managed-proxy");
+    seed_account(db.path(), "acc-managed");
     let _managed_proxy = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "http://127.0.0.1:7003");
     let _pool_proxy = EnvGuard::set(ENV_PROXY_LIST, "http://127.0.0.1:7004");
     let _upper_https_proxy = EnvGuard::clear("HTTPS_PROXY");
@@ -807,12 +807,39 @@ fn websocket_proxy_url_for_account_uses_system_proxy_without_account_proxy() {
 
     assert_eq!(
         websocket_proxy_url_for_account(
-            "acc-system",
+            "acc-managed",
             "wss://chatgpt.com/backend-api/codex/responses",
         )
         .expect("resolve websocket proxy")
         .as_deref(),
-        Some("http://127.0.0.1:7002")
+        Some("http://127.0.0.1:7003")
+    );
+}
+
+#[test]
+fn websocket_proxy_url_for_account_uses_proxy_pool_before_environment() {
+    let _guard = crate::test_env_guard();
+    let db = TestDbGuard::new("runtime-websocket-proxy-pool");
+    seed_account(db.path(), "acc-pool");
+    let _managed_proxy = EnvGuard::clear(ENV_UPSTREAM_PROXY_URL);
+    let _pool_proxy = EnvGuard::set(ENV_PROXY_LIST, "http://127.0.0.1:7004");
+    let _upper_https_proxy = EnvGuard::clear("HTTPS_PROXY");
+    let _https_proxy = EnvGuard::set("https_proxy", "http://127.0.0.1:7002");
+    let _all_proxy = EnvGuard::clear("all_proxy");
+    let _upper_all_proxy = EnvGuard::clear("ALL_PROXY");
+    let _no_proxy = EnvGuard::clear("no_proxy");
+    let _upper_no_proxy = EnvGuard::clear("NO_PROXY");
+
+    reload_from_env();
+
+    assert_eq!(
+        websocket_proxy_url_for_account(
+            "acc-pool",
+            "wss://chatgpt.com/backend-api/codex/responses",
+        )
+        .expect("resolve websocket proxy")
+        .as_deref(),
+        Some("http://127.0.0.1:7004")
     );
 }
 

@@ -397,6 +397,16 @@ pub(crate) fn websocket_proxy_url_for_account(
         }
         AccountProxyClientCacheEntry::NotConfigured => {}
     }
+
+    let pool = crate::lock_utils::read_recover(upstream_client_pool_lock(), "upstream_client_pool");
+    if let Some(proxy_url) = pool.proxy_for_account(account_id) {
+        return Ok(Some(proxy_url.to_string()));
+    }
+    drop(pool);
+    if let Some(proxy_url) = current_upstream_proxy_url() {
+        return Ok(Some(proxy_url));
+    }
+
     environment_proxy_url_for_target(target_url)
 }
 

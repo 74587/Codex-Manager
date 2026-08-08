@@ -962,8 +962,8 @@ fn send_websocket_upstream_request_uses_system_environment_proxy() {
     let (proxy_url, connect_rx, proxy_handle) = spawn_http_connect_proxy(target_addr);
     let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
     let _proxy_list_guard = EnvGuard::set("CODEXMANAGER_PROXY_LIST", "");
-    let _http_proxy_guard = EnvGuard::set("http_proxy", proxy_url.as_str());
     let _upper_http_proxy_guard = EnvGuard::set("HTTP_PROXY", "");
+    let _http_proxy_guard = EnvGuard::set("http_proxy", proxy_url.as_str());
     let _all_proxy_guard = EnvGuard::set("all_proxy", "");
     let _upper_all_proxy_guard = EnvGuard::set("ALL_PROXY", "");
     let _no_proxy_guard = EnvGuard::set("no_proxy", "");
