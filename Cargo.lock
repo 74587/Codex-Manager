@@ -376,6 +376,7 @@ dependencies = [
  "env_logger",
  "eventsource-stream",
  "futures-util",
+ "hyper-util",
  "libc",
  "log",
  "os_info",
