@@ -94,12 +94,12 @@
   </tr>
   <tr>
     <td align="center" valign="middle" width="180">
-      <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">
+      <a href="https://www.aixiamo.com/chatgpt-pro?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=logo_pro_price_20260808">
         <img src="assets/images/sponsors/aixiamo.jpg" alt="AI夏末 AIXiamo" width="120" />
       </a>
     </td>
     <td valign="top">
-      <strong><a href="https://www.aixiamo.com/chatgpt-pro?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_owner">AIXiamo（独立 AI 订阅服务）</a></strong>：提供 ChatGPT Plus / Pro 国内充值；高频 Codex、深度研究和长任务用户可先<a href="https://www.aixiamo.com/tools/chatgpt-pro-plan-calculator?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_calculator">比较 Pro 5x / 20x 并用用量选择器判断档位</a>。也覆盖 Claude Max、Google AI Pro（Gemini）和 SuperGrok；支持支付宝，无需海外银行卡，订单状态可查询。
+      <strong><a href="https://www.aixiamo.com/chatgpt-pro?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_owner_price_20260808">AIXiamo（独立 AI 订阅服务，赞助展示）</a></strong>：截至 2026-08-08，ChatGPT Pro 5x（100 美元档）公开价 ¥719，20x（200 美元档）公开价 ¥1269；支持支付宝、USDT-BEP20（BSC）和 USDT-TRC20（TRON），无需海外银行卡。Pro 由人工按订单处理，顺利时通常约 2–5 分钟；不索取登录密码、验证码或恢复码，付款后订单与处理状态可查。可使用<a href="https://www.aixiamo.com/tools/chatgpt-pro-plan-calculator?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager&utm_content=pro_calculator_price_20260808">用量选择器比较 Pro 5x / 20x</a>。价格、库存及支付方式可能调整，以实时页面为准。
     </td>
   </tr>
   <tr>
