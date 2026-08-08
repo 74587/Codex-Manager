@@ -44,7 +44,9 @@ pub(crate) fn schedule_startup_main_window(app: &tauri::AppHandle) {
         log::info!("startup main window remains hidden by app setting while initializing");
         if !initialize_main_window(app) {
             log::warn!("startup main window failed to initialize in the background");
+            return;
         }
+        schedule_startup_app_navigation(app.clone());
         return;
     }
 
@@ -54,9 +56,17 @@ pub(crate) fn schedule_startup_main_window(app: &tauri::AppHandle) {
             log::warn!("startup show main window request failed: {}", err);
             return;
         }
-        wait_for_startup_webview_content();
-        navigate_main_window_to_startup_app_when_ready(&app);
+        wait_for_startup_app_navigation(&app);
     });
+}
+
+fn schedule_startup_app_navigation(app: tauri::AppHandle) {
+    std::thread::spawn(move || wait_for_startup_app_navigation(&app));
+}
+
+fn wait_for_startup_app_navigation(app: &tauri::AppHandle) {
+    wait_for_startup_webview_content();
+    navigate_main_window_to_startup_app_when_ready(app);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
