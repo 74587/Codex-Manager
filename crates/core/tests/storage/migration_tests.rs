@@ -671,6 +671,9 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         .has_column("api_key_profiles", "service_tier")
         .expect("check api_key_profiles.service_tier"));
     assert!(storage
+        .has_column("models", "fast_policy")
+        .expect("check models.fast_policy"));
+    assert!(storage
         .has_table("api_key_quota_limits")
         .expect("check api_key_quota_limits table"));
     assert!(storage
