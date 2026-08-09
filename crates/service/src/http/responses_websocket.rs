@@ -69,7 +69,9 @@ struct PendingWsRequestState {
     log: PendingWsRequestLog,
     prepared: PreparedClientFrame,
     forwarded_upstream_event: bool,
-    retry_after_idle_upstream_disconnect: bool,
+    forwarded_non_preamble_event: bool,
+    replayed_after_upstream_disconnect: bool,
+    suppress_replayed_preamble: bool,
     buffered_upstream_preamble: Vec<String>,
     buffer_retry_preamble: bool,
     attempted_account_ids: HashSet<String>,
@@ -328,7 +330,9 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         log: first_log,
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
-        retry_after_idle_upstream_disconnect: false,
+        forwarded_non_preamble_event: false,
+        replayed_after_upstream_disconnect: false,
+        suppress_replayed_preamble: false,
         buffered_upstream_preamble: Vec::new(),
         buffer_retry_preamble: should_buffer_ws_retry_preamble(
             &upstream,
@@ -372,7 +376,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     }
     let mut pending_request = Some(first_pending);
     let mut completed_tool_calls = CompletedWsToolCallCache::default();
-    let mut upstream_completed_response = false;
 
     loop {
         tokio::select! {
@@ -416,8 +419,9 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     ),
                                     prepared,
                                     forwarded_upstream_event: false,
-                                    retry_after_idle_upstream_disconnect:
-                                        upstream_completed_response,
+                                    forwarded_non_preamble_event: false,
+                                    replayed_after_upstream_disconnect: false,
+                                    suppress_replayed_preamble: false,
                                     buffered_upstream_preamble: Vec::new(),
                                     buffer_retry_preamble,
                                     attempted_account_ids,
@@ -441,8 +445,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     .await
                                     {
                                         Ok(replacement) => {
-                                            current_pending.retry_after_idle_upstream_disconnect =
-                                                false;
                                             log::info!(
                                                 "event=responses_ws_upstream_reconnected previous_account_id={} account_id={} reason=stale_send",
                                                 previous_account_id,
@@ -470,7 +472,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         }
                                     }
                                 }
-                                upstream_completed_response = false;
                                 pending_request = Some(current_pending);
                             }
                             Err(err) => {
@@ -520,7 +521,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
             maybe_upstream = upstream.stream.next() => {
                 let Some(upstream_result) = maybe_upstream else {
                     if pending_request.is_some() {
-                        let retry_result = retry_pending_request_after_idle_upstream_disconnect(
+                        let retry_result = retry_pending_request_after_upstream_disconnect(
                             &context,
                             &mut upstream,
                             pending_request
@@ -532,7 +533,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         .await;
                         match retry_result {
                             Ok(true) => {
-                                upstream_completed_response = false;
                                 continue;
                             }
                             Ok(false) => {}
@@ -594,9 +594,8 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 previous_account_id,
                                 replacement.account_id,
                             );
-                            upstream = replacement;
-                            upstream_completed_response = false;
-                            pending_request = Some(pending);
+                                upstream = replacement;
+                                pending_request = Some(pending);
                             continue;
                         }
                         Ok(None) => break,
@@ -680,11 +679,15 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 log::warn!("event=responses_ws_client_send_terminal_failed err={err}");
                                 break;
                             }
-                            upstream_completed_response = true;
                             continue;
                         }
 
                         if let Some(pending) = pending_request.as_mut() {
+                            if pending.suppress_replayed_preamble
+                                && should_buffer_ws_upstream_preamble(text.as_str(), 0)
+                            {
+                                continue;
+                            }
                             let should_buffer_preamble = pending.buffer_retry_preamble
                                 && should_buffer_ws_upstream_preamble(
                                 text.as_str(),
@@ -700,7 +703,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
                                 break;
                             }
-                            mark_ws_first_response(pending);
+                            mark_ws_forwarded_event(pending, text.as_str());
                         }
                         if let Err(err) = socket
                             .send(Message::Text(text.to_string().into()))
@@ -717,6 +720,8 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 break;
                             }
                             mark_ws_first_response(pending);
+                            pending.forwarded_non_preamble_event = true;
+                            pending.suppress_replayed_preamble = false;
                         }
                         if let Err(err) = socket.send(Message::Binary(bytes)).await {
                             log::warn!("event=responses_ws_client_send_binary_failed err={err}");
@@ -731,7 +736,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     }
                     Ok(UpstreamMessage::Close(_)) => {
                         if pending_request.is_some() {
-                            let retry_result = retry_pending_request_after_idle_upstream_disconnect(
+                            let retry_result = retry_pending_request_after_upstream_disconnect(
                                 &context,
                                 &mut upstream,
                                 pending_request
@@ -743,7 +748,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             .await;
                             match retry_result {
                                 Ok(true) => {
-                                    upstream_completed_response = false;
                                     continue;
                                 }
                                 Ok(false) => {}
@@ -806,7 +810,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     replacement.account_id,
                                 );
                                 upstream = replacement;
-                                upstream_completed_response = false;
                                 pending_request = Some(pending);
                                 continue;
                             }
@@ -820,7 +823,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     Ok(UpstreamMessage::Frame(_)) => {}
                     Err(read_err) => {
                         if pending_request.is_some() {
-                            let retry_result = retry_pending_request_after_idle_upstream_disconnect(
+                            let retry_result = retry_pending_request_after_upstream_disconnect(
                                 &context,
                                 &mut upstream,
                                 pending_request
@@ -832,7 +835,6 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             .await;
                             match retry_result {
                                 Ok(true) => {
-                                    upstream_completed_response = false;
                                     continue;
                                 }
                                 Ok(false) => {}
@@ -894,9 +896,8 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     previous_account_id,
                                     replacement.account_id,
                                 );
-                                upstream = replacement;
-                                upstream_completed_response = false;
-                                pending_request = Some(pending);
+                            upstream = replacement;
+                            pending_request = Some(pending);
                                 continue;
                             }
                             Ok(None) => break,
@@ -1416,18 +1417,21 @@ async fn reconnect_upstream_for_pending_request(
     Ok(replacement)
 }
 
-async fn retry_pending_request_after_idle_upstream_disconnect(
+async fn retry_pending_request_after_upstream_disconnect(
     context: &WsRequestContext,
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
     completed_tool_calls: &CompletedWsToolCallCache,
     reason: &str,
 ) -> Result<bool, WsSessionError> {
-    if pending.forwarded_upstream_event || !pending.retry_after_idle_upstream_disconnect {
+    if pending.forwarded_non_preamble_event || pending.replayed_after_upstream_disconnect {
         return Ok(false);
     }
 
-    pending.retry_after_idle_upstream_disconnect = false;
+    let suppress_replayed_preamble = pending.forwarded_upstream_event;
+    pending.replayed_after_upstream_disconnect = true;
+    pending.suppress_replayed_preamble = suppress_replayed_preamble;
+    pending.buffered_upstream_preamble.clear();
     let previous_account_id = upstream.account_id.clone();
     let replacement = reconnect_upstream_for_pending_request(
         context,
@@ -1460,7 +1464,9 @@ async fn wait_for_client_request_and_reconnect_upstream(
         log: begin_ws_request_log(context, &prepared, "unresolved", "upstream_reconnect"),
         prepared,
         forwarded_upstream_event: false,
-        retry_after_idle_upstream_disconnect: false,
+        forwarded_non_preamble_event: false,
+        replayed_after_upstream_disconnect: false,
+        suppress_replayed_preamble: false,
         buffered_upstream_preamble: Vec::new(),
         buffer_retry_preamble: false,
         attempted_account_ids: HashSet::new(),
@@ -2324,6 +2330,14 @@ fn mark_ws_first_response(pending: &mut PendingWsRequestState) {
     }
     pending.forwarded_upstream_event = true;
     pending.buffer_retry_preamble = false;
+}
+
+fn mark_ws_forwarded_event(pending: &mut PendingWsRequestState, text: &str) {
+    mark_ws_first_response(pending);
+    if !should_buffer_ws_upstream_preamble(text, 0) {
+        pending.forwarded_non_preamble_event = true;
+        pending.suppress_replayed_preamble = false;
+    }
 }
 
 fn finalize_ws_request_log(

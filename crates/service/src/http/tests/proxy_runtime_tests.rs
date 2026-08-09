@@ -766,6 +766,176 @@ async fn start_mock_upstream_ws_closes_after_each_response() -> (
     (addr.to_string(), event_rx, handle)
 }
 
+async fn start_mock_upstream_ws_resets_after_preamble() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<(usize, String)>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind reset-after-preamble mock upstream");
+    let addr = listener
+        .local_addr()
+        .expect("reset-after-preamble mock upstream addr");
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("accept initial reset-after-preamble upstream");
+        let mut websocket =
+            accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+                .await
+                .expect("accept initial reset-after-preamble websocket handshake");
+        let initial_text = match websocket.next().await {
+            Some(Ok(Message::Text(text))) => text.to_string(),
+            other => panic!("expected initial reset-after-preamble frame, got {other:?}"),
+        };
+        event_tx
+            .send((0, initial_text))
+            .expect("record initial reset-after-preamble frame");
+        websocket
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "response.created",
+                    "response": { "id": "resp_ws_reset_initial" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send initial reset-after-preamble response.created");
+
+        let raw_stream = websocket
+            .into_inner()
+            .into_std()
+            .expect("convert reset-after-preamble stream");
+        force_tcp_reset(&raw_stream);
+        drop(raw_stream);
+
+        let (replacement_stream, _) = listener
+            .accept()
+            .await
+            .expect("accept replacement reset-after-preamble upstream");
+        let mut replacement =
+            accept_hdr_async(replacement_stream, |_: &Request, response: Response| {
+                Ok(response)
+            })
+            .await
+            .expect("accept replacement reset-after-preamble websocket handshake");
+
+        for round in 1..=2 {
+            let text = match replacement.next().await {
+                Some(Ok(Message::Text(text))) => text.to_string(),
+                other => panic!("expected replay/follow-up frame for round {round}, got {other:?}"),
+            };
+            event_tx
+                .send((round, text))
+                .expect("record replay/follow-up reset-after-preamble frame");
+            for payload in [
+                serde_json::json!({
+                    "type": "response.created",
+                    "response": { "id": format!("resp_ws_reset_{round}") }
+                }),
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": { "id": format!("resp_ws_reset_{round}") }
+                }),
+            ] {
+                replacement
+                    .send(Message::Text(payload.to_string().into()))
+                    .await
+                    .expect("send reset-after-preamble response");
+            }
+        }
+        let _ = replacement.next().await;
+    });
+    (addr.to_string(), event_rx, handle)
+}
+
+fn force_tcp_reset(stream: &std::net::TcpStream) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let result = unsafe {
+            libc::setsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                (&linger as *const libc::linger).cast(),
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(result, 0, "set reset-after-preamble linger");
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = stream;
+    }
+}
+
+async fn start_mock_upstream_ws_resets_after_output() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind reset-after-output mock upstream");
+    let addr = listener
+        .local_addr()
+        .expect("reset-after-output mock upstream addr");
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (reset_tx, reset_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("accept reset-after-output upstream");
+        let mut websocket =
+            accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+                .await
+                .expect("accept reset-after-output websocket handshake");
+        let initial_text = match websocket.next().await {
+            Some(Ok(Message::Text(text))) => text.to_string(),
+            other => panic!("expected reset-after-output frame, got {other:?}"),
+        };
+        event_tx
+            .send(initial_text)
+            .expect("record reset-after-output frame");
+        for payload in [
+            serde_json::json!({
+                "type": "response.created",
+                "response": { "id": "resp_ws_reset_after_output" }
+            }),
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "delta": "partial output"
+            }),
+        ] {
+            websocket
+                .send(Message::Text(payload.to_string().into()))
+                .await
+                .expect("send reset-after-output event");
+        }
+        let _ = reset_rx.await;
+        let raw_stream = websocket
+            .into_inner()
+            .into_std()
+            .expect("convert reset-after-output stream");
+        force_tcp_reset(&raw_stream);
+        drop(raw_stream);
+    });
+    (addr.to_string(), event_rx, reset_tx, handle)
+}
+
 async fn start_mock_upstream_ws_closes_after_accepting_follow_up() -> (
     String,
     tokio::sync::mpsc::UnboundedReceiver<(usize, String)>,
@@ -1400,6 +1570,298 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         .await
         .expect("mock upstream shutdown timeout")
         .expect("join mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_replays_after_upstream_reset_after_preamble() {
+    let _guard = crate::test_env_guard();
+    let _http_proxy = EnvGuard::clear("http_proxy");
+    let _https_proxy = EnvGuard::clear("https_proxy");
+    let _all_proxy = EnvGuard::clear("all_proxy");
+    let _upper_http_proxy = EnvGuard::clear("HTTP_PROXY");
+    let _upper_https_proxy = EnvGuard::clear("HTTPS_PROXY");
+    let _upper_all_proxy = EnvGuard::clear("ALL_PROXY");
+    let _no_proxy = EnvGuard::set("NO_PROXY", "127.0.0.1,localhost");
+    let _lower_no_proxy = EnvGuard::clear("no_proxy");
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-reset-after-preamble");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, upstream_handle) =
+        start_mock_upstream_ws_resets_after_preamble().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_reset_after_preamble",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_reset_after_preamble",
+        &[
+            ("OpenAI-Beta", "responses_websockets=2026-02-06"),
+            ("session_id", "session_ws_reset_after_preamble"),
+            ("x-client-request-id", "client_req_ws_reset_after_preamble"),
+        ],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "reset after preamble first"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send first reset-after-preamble request");
+    let (first_round, first_text) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+            .await
+            .expect("initial reset-after-preamble frame timeout")
+            .expect("initial reset-after-preamble frame channel");
+    assert_eq!(first_round, 0);
+    assert!(first_text.contains("reset after preamble first"));
+
+    let mut first_created_events = 0;
+    let mut first_completed = false;
+    while !first_completed {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("first reset-after-preamble client event timeout")
+            .expect("client websocket must survive upstream reset")
+            .expect("first reset-after-preamble client event result");
+        match event {
+            Message::Text(text) if text.contains("\"response.created\"") => {
+                first_created_events += 1;
+            }
+            Message::Text(text) if text.contains("\"response.completed\"") => {
+                first_completed = true;
+            }
+            Message::Text(text) if text.contains("\"type\":\"error\"") => {
+                panic!("upstream reset escaped to client: {text}");
+            }
+            other => panic!("unexpected first reset-after-preamble event: {other:?}"),
+        }
+    }
+    assert_eq!(
+        first_created_events, 1,
+        "replayed preamble must not be duplicated"
+    );
+    let (replay_round, replay_text) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+            .await
+            .expect("replay after reset frame timeout")
+            .expect("replay after reset frame channel");
+    assert_eq!(replay_round, 1);
+    assert!(replay_text.contains("reset after preamble first"));
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "reset after preamble follow-up"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send follow-up after reset recovery");
+    let (follow_up_round, follow_up_text) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+            .await
+            .expect("follow-up after reset frame timeout")
+            .expect("follow-up after reset frame channel");
+    assert_eq!(follow_up_round, 2);
+    assert!(follow_up_text.contains("reset after preamble follow-up"));
+
+    let mut follow_up_completed = false;
+    while !follow_up_completed {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("follow-up after reset client event timeout")
+            .expect("client websocket must remain open after reset recovery")
+            .expect("follow-up after reset client event result");
+        match event {
+            Message::Text(text) if text.contains("\"response.completed\"") => {
+                follow_up_completed = true;
+            }
+            Message::Text(text) if text.contains("\"type\":\"error\"") => {
+                panic!("follow-up after reset escaped to client: {text}");
+            }
+            Message::Text(_) => {}
+            other => panic!("unexpected follow-up after reset event: {other:?}"),
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let request_logs = storage
+        .list_request_logs(None, 10)
+        .expect("list reset-after-preamble request logs");
+    let ws_logs = request_logs
+        .iter()
+        .filter(|item| item.request_type.as_deref() == Some("ws"))
+        .collect::<Vec<_>>();
+    assert_eq!(ws_logs.len(), 2);
+    assert!(ws_logs.iter().all(|item| item.status_code == Some(200)));
+
+    let _ = client_ws.close(None).await;
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server_handle)
+        .await
+        .expect("front proxy reset-after-preamble shutdown timeout")
+        .expect("join reset-after-preamble front proxy");
+    tokio::time::timeout(Duration::from_secs(5), upstream_handle)
+        .await
+        .expect("mock reset-after-preamble upstream shutdown timeout")
+        .expect("join reset-after-preamble mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_does_not_replay_after_output_before_reset() {
+    let _guard = crate::test_env_guard();
+    let _http_proxy = EnvGuard::clear("http_proxy");
+    let _https_proxy = EnvGuard::clear("https_proxy");
+    let _all_proxy = EnvGuard::clear("all_proxy");
+    let _upper_http_proxy = EnvGuard::clear("HTTP_PROXY");
+    let _upper_https_proxy = EnvGuard::clear("HTTPS_PROXY");
+    let _upper_all_proxy = EnvGuard::clear("ALL_PROXY");
+    let _no_proxy = EnvGuard::set("NO_PROXY", "127.0.0.1,localhost");
+    let _lower_no_proxy = EnvGuard::clear("no_proxy");
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-reset-after-output");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, reset_upstream_tx, upstream_handle) =
+        start_mock_upstream_ws_resets_after_output().await;
+    let mut reset_upstream_tx = Some(reset_upstream_tx);
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_reset_after_output",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_reset_after_output",
+        &[
+            ("OpenAI-Beta", "responses_websockets=2026-02-06"),
+            ("session_id", "session_ws_reset_after_output"),
+            ("x-client-request-id", "client_req_ws_reset_after_output"),
+        ],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "do not replay after output"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send reset-after-output request");
+    let initial_text = tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+        .await
+        .expect("initial reset-after-output frame timeout")
+        .expect("initial reset-after-output frame channel");
+    assert!(initial_text.contains("do not replay after output"));
+
+    let mut received_output = false;
+    let mut received_error = false;
+    while !received_error {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("reset-after-output client event timeout")
+            .expect("reset-after-output client websocket event")
+            .expect("reset-after-output client event result");
+        match event {
+            Message::Text(text) if text.contains("response.output_text.delta") => {
+                received_output = true;
+                reset_upstream_tx
+                    .take()
+                    .expect("reset-after-output release sender")
+                    .send(())
+                    .expect("release reset-after-output upstream");
+            }
+            Message::Text(text) if text.contains("\"type\":\"error\"") => {
+                received_error = true;
+            }
+            Message::Text(text) => {
+                assert!(
+                    text.contains("response.created"),
+                    "unexpected reset-after-output event: {text}"
+                );
+            }
+            Message::Close(_) => break,
+            other => panic!("unexpected reset-after-output event: {other:?}"),
+        }
+    }
+    assert!(received_output, "substantive output must reach the client");
+    assert!(received_error, "the reset must be surfaced after output");
+    assert!(
+        upstream_events.try_recv().is_err(),
+        "substantive output must disable request replay"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let request_logs = storage
+        .list_request_logs(None, 10)
+        .expect("list reset-after-output request logs");
+    let ws_logs = request_logs
+        .iter()
+        .filter(|item| item.request_type.as_deref() == Some("ws"))
+        .collect::<Vec<_>>();
+    assert_eq!(ws_logs.len(), 1);
+    assert_eq!(ws_logs[0].status_code, Some(502));
+
+    let _ = client_ws.close(None).await;
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server_handle)
+        .await
+        .expect("front proxy reset-after-output shutdown timeout")
+        .expect("join reset-after-output front proxy");
+    tokio::time::timeout(Duration::from_secs(5), upstream_handle)
+        .await
+        .expect("mock reset-after-output shutdown timeout")
+        .expect("join reset-after-output mock upstream");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
