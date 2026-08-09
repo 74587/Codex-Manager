@@ -713,6 +713,70 @@ async fn start_mock_upstream_ws() -> (
     (addr.to_string(), event_rx, capture_rx, handle)
 }
 
+async fn start_mock_upstream_ws_waits_for_heartbeat() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+    oneshot::Receiver<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind heartbeat mock upstream");
+    let addr = listener.local_addr().expect("heartbeat mock upstream addr");
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (heartbeat_tx, heartbeat_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("accept heartbeat mock upstream");
+        let mut websocket =
+            accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+                .await
+                .expect("accept heartbeat mock upstream websocket handshake");
+        let request = match websocket.next().await {
+            Some(Ok(Message::Text(text))) => text.to_string(),
+            other => panic!("expected heartbeat mock response.create, got {other:?}"),
+        };
+        event_tx
+            .send(request)
+            .expect("record heartbeat mock response.create");
+        for payload in [
+            serde_json::json!({
+                "type": "response.created",
+                "response": { "id": "resp_ws_heartbeat" }
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": { "id": "resp_ws_heartbeat" }
+            }),
+        ] {
+            websocket
+                .send(Message::Text(payload.to_string().into()))
+                .await
+                .expect("send heartbeat mock response event");
+        }
+
+        while let Some(result) = websocket.next().await {
+            match result {
+                Ok(Message::Ping(payload)) => {
+                    websocket
+                        .send(Message::Pong(payload))
+                        .await
+                        .expect("send heartbeat mock pong");
+                    let _ = heartbeat_tx.send(());
+                    break;
+                }
+                Ok(Message::Pong(_)) | Ok(Message::Text(_)) => {}
+                Ok(Message::Close(_)) => break,
+                Ok(Message::Binary(_)) | Ok(Message::Frame(_)) => {}
+                Err(err) => panic!("heartbeat mock websocket read failed: {err}"),
+            }
+        }
+    });
+    (addr.to_string(), event_rx, heartbeat_rx, handle)
+}
+
 async fn start_mock_upstream_ws_closes_after_each_response() -> (
     String,
     tokio::sync::mpsc::UnboundedReceiver<(usize, String)>,
@@ -1570,6 +1634,118 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         .await
         .expect("mock upstream shutdown timeout")
         .expect("join mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_keeps_idle_session_alive_with_heartbeat() {
+    let _guard = crate::test_env_guard();
+    let _http_proxy = EnvGuard::clear("http_proxy");
+    let _https_proxy = EnvGuard::clear("https_proxy");
+    let _all_proxy = EnvGuard::clear("all_proxy");
+    let _upper_http_proxy = EnvGuard::clear("HTTP_PROXY");
+    let _upper_https_proxy = EnvGuard::clear("HTTPS_PROXY");
+    let _upper_all_proxy = EnvGuard::clear("ALL_PROXY");
+    let _no_proxy = EnvGuard::set("NO_PROXY", "127.0.0.1,localhost");
+    let _lower_no_proxy = EnvGuard::clear("no_proxy");
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-heartbeat");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, upstream_heartbeat_rx, upstream_handle) =
+        start_mock_upstream_ws_waits_for_heartbeat().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_heartbeat",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_heartbeat",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "keep this websocket alive"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send heartbeat test request");
+    let upstream_request = tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+        .await
+        .expect("heartbeat upstream request timeout")
+        .expect("heartbeat upstream request channel");
+    assert!(upstream_request.contains("keep this websocket alive"));
+
+    let mut completed = false;
+    while !completed {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("heartbeat initial response timeout")
+            .expect("heartbeat client websocket must remain open")
+            .expect("heartbeat initial response result");
+        match event {
+            Message::Text(text) => completed = text.contains("\"response.completed\""),
+            other => panic!("unexpected heartbeat initial response: {other:?}"),
+        }
+    }
+
+    let heartbeat_wait = tokio::time::timeout(Duration::from_secs(35), async {
+        loop {
+            let event = client_ws
+                .next()
+                .await
+                .expect("heartbeat client websocket unexpectedly closed")
+                .expect("heartbeat client websocket read failed");
+            match event {
+                Message::Ping(payload) => {
+                    assert!(payload.is_empty(), "heartbeat ping should have no payload");
+                    break;
+                }
+                Message::Pong(_) => {}
+                other => panic!("unexpected idle websocket event: {other:?}"),
+            }
+        }
+    })
+    .await;
+    heartbeat_wait.expect("downstream websocket heartbeat timeout");
+    tokio::time::timeout(Duration::from_secs(5), upstream_heartbeat_rx)
+        .await
+        .expect("upstream websocket heartbeat timeout")
+        .expect("upstream websocket heartbeat signal");
+
+    let _ = client_ws.close(None).await;
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server_handle)
+        .await
+        .expect("front proxy heartbeat shutdown timeout")
+        .expect("join heartbeat front proxy");
+    tokio::time::timeout(Duration::from_secs(5), upstream_handle)
+        .await
+        .expect("mock heartbeat upstream shutdown timeout")
+        .expect("join heartbeat mock upstream");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

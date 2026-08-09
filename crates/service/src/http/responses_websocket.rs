@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::IpAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -39,6 +39,9 @@ const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
 const RESPONSES_WS_CONTEXT_REBASE_ERROR_CODE: &str = "responses_websocket_context_rebase_failed";
 const RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const MAX_BUFFERED_WS_PREAMBLE_EVENTS: usize = 16;
+// Keep both WebSocket legs active across long turns; TCP keepalive does not prevent
+// application-layer proxy/NAT idle eviction.
+const RESPONSES_WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct WsRequestContext {
@@ -376,9 +379,27 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     }
     let mut pending_request = Some(first_pending);
     let mut completed_tool_calls = CompletedWsToolCallCache::default();
+    let mut heartbeat = responses_ws_heartbeat_interval();
 
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if let Err(err) = socket.send(Message::Ping(Vec::new().into())).await {
+                    log::info!("event=responses_ws_client_heartbeat_failed err={err}");
+                    let _ = upstream.stream.close(None).await;
+                    break;
+                }
+                if let Err(err) = upstream
+                    .stream
+                    .send(UpstreamMessage::Ping(Vec::new().into()))
+                    .await
+                {
+                    log::info!(
+                        "event=responses_ws_upstream_heartbeat_failed account_id={} err={err}",
+                        upstream.account_id,
+                    );
+                }
+            }
             maybe_client = socket.recv() => {
                 let Some(client_result) = maybe_client else {
                     let _ = upstream.stream.close(None).await;
@@ -996,9 +1017,22 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
 }
 
 async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String>, WsSessionError> {
+    let mut heartbeat = responses_ws_heartbeat_interval();
     loop {
-        let Some(message) = socket.recv().await else {
-            return Ok(None);
+        let message = tokio::select! {
+            maybe_message = socket.recv() => {
+                let Some(message) = maybe_message else {
+                    return Ok(None);
+                };
+                message
+            }
+            _ = heartbeat.tick() => {
+                if let Err(err) = socket.send(Message::Ping(Vec::new().into())).await {
+                    log::info!("event=responses_ws_client_heartbeat_failed_during_wait err={err}");
+                    return Ok(None);
+                }
+                continue;
+            }
         };
         match message {
             Ok(Message::Text(text)) => return Ok(Some(text.to_string())),
@@ -1021,6 +1055,13 @@ async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String
             }
         }
     }
+}
+
+fn responses_ws_heartbeat_interval() -> tokio::time::Interval {
+    tokio::time::interval_at(
+        tokio::time::Instant::now() + RESPONSES_WS_HEARTBEAT_INTERVAL,
+        RESPONSES_WS_HEARTBEAT_INTERVAL,
+    )
 }
 
 fn rewrite_client_frame(
