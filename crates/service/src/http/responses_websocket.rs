@@ -42,6 +42,9 @@ const MAX_BUFFERED_WS_PREAMBLE_EVENTS: usize = 16;
 // Keep both WebSocket legs active across long turns; TCP keepalive does not prevent
 // application-layer proxy/NAT idle eviction.
 const RESPONSES_WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE: &str =
+    "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.";
 
 #[derive(Clone)]
 struct WsRequestContext {
@@ -142,6 +145,19 @@ impl WsConnectError {
             self.status_code.unwrap_or_default(),
             &self.response_body,
         ) || crate::agent_identity::is_agent_identity_task_invalid_error(&self.message)
+    }
+
+    fn is_websocket_connection_limit_reached(&self) -> bool {
+        if self
+            .message
+            .to_ascii_lowercase()
+            .contains("websocket connection limit reached")
+        {
+            return true;
+        }
+        let body = String::from_utf8_lossy(&self.response_body).to_ascii_lowercase();
+        body.contains(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
+            || body.contains(&WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE.to_ascii_lowercase())
     }
 }
 
@@ -630,6 +646,84 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                     Ok(UpstreamMessage::Text(text)) => {
                         completed_tool_calls.observe_upstream_event(text.as_str());
                         if let Some(terminal) = inspect_ws_terminal_event(text.as_str()) {
+                            if terminal.is_websocket_connection_limit {
+                                if let Some(pending) = pending_request.as_mut() {
+                                    let previous_account_id = upstream.account_id.clone();
+                                    let _ = upstream.stream.close(None).await;
+                                    match retry_pending_request_after_upstream_disconnect(
+                                        &context,
+                                        &mut upstream,
+                                        pending,
+                                        &completed_tool_calls,
+                                        "connection_limit_reached",
+                                    )
+                                    .await
+                                    {
+                                        Ok(true) => {
+                                            log::info!(
+                                                "event=responses_ws_connection_limit_recovered previous_account_id={} account_id={}",
+                                                previous_account_id,
+                                                upstream.account_id,
+                                            );
+                                            continue;
+                                        }
+                                        Ok(false) => {}
+                                        Err(err) => {
+                                            let log_error = err.message.clone();
+                                            if let Some(pending) = pending_request.take() {
+                                                finalize_ws_request_log(
+                                                    &context,
+                                                    &pending.log,
+                                                    Some(upstream.account_id.as_str()),
+                                                    Some(upstream.upstream_url.as_str()),
+                                                    err.status,
+                                                    crate::gateway::RequestLogUsage::default(),
+                                                    Some(log_error),
+                                                );
+                                            }
+                                            send_ws_error_and_close(
+                                                &mut socket,
+                                                err,
+                                                context.prefer_raw_errors,
+                                            )
+                                            .await;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    let previous_account_id = upstream.account_id.clone();
+                                    let _ = upstream.stream.close(None).await;
+                                    match wait_for_client_request_and_reconnect_upstream(
+                                        &mut socket,
+                                        &context,
+                                        previous_account_id.as_str(),
+                                        &completed_tool_calls,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some((replacement, pending))) => {
+                                            log::info!(
+                                                "event=responses_ws_connection_limit_recovered previous_account_id={} account_id={} reason=idle",
+                                                previous_account_id,
+                                                replacement.account_id,
+                                            );
+                                            upstream = replacement;
+                                            pending_request = Some(pending);
+                                            continue;
+                                        }
+                                        Ok(None) => break,
+                                        Err(err) => {
+                                            send_ws_error_and_close(
+                                                &mut socket,
+                                                err,
+                                                context.prefer_raw_errors,
+                                            )
+                                            .await;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             apply_ws_terminal_account_follow_up(
                                 upstream.account_id.as_str(),
                                 &terminal,
@@ -1563,6 +1657,28 @@ async fn connect_account_upstream_websocket(
             Ok((stream, _)) => return Ok(stream),
             Err(err) => err,
         };
+    if first_error.is_websocket_connection_limit_reached() {
+        log::info!(
+            "event=responses_ws_connection_limit_handshake_retry account_id={}",
+            account.id,
+        );
+        let retry_request = build_upstream_websocket_request(
+            ws_url,
+            account,
+            &authorization,
+            context,
+            strip_session_affinity,
+        )
+        .map_err(|err| err.message)?;
+        return connect_upstream_websocket_request_detailed(
+            retry_request,
+            ws_url,
+            proxy_url.as_deref(),
+        )
+        .await
+        .map(|(stream, _)| stream)
+        .map_err(|err| format!("{err} (after websocket connection limit recovery)"));
+    }
     if !first_error.is_unauthorized() {
         return Err(first_error.to_string());
     }
@@ -2486,6 +2602,7 @@ struct WsTerminalEvent {
     usage: crate::gateway::RequestLogUsage,
     error: Option<String>,
     is_usage_limit: bool,
+    is_websocket_connection_limit: bool,
 }
 
 fn should_rotate_ws_upstream(status_code: u16) -> bool {
@@ -2723,29 +2840,48 @@ fn inspect_ws_terminal_event(text: &str) -> Option<WsTerminalEvent> {
             usage: parse_ws_usage(&value),
             error: error.or(Some(usage_limit_signal)),
             is_usage_limit: true,
+            is_websocket_connection_limit: false,
         });
     }
+    let is_websocket_connection_limit =
+        is_websocket_connection_limit_error(error_code.as_deref(), error.as_deref());
     match event_type.as_str() {
         "response.completed" | "response.done" => Some(WsTerminalEvent {
             status_code: 200,
             usage: parse_ws_usage(&value),
             error: None,
             is_usage_limit: false,
+            is_websocket_connection_limit: false,
         }),
         "response.failed" | "error" => Some(WsTerminalEvent {
             status_code: infer_ws_terminal_status(&value, error.as_deref()),
             usage: parse_ws_usage(&value),
             error: error.or(error_code),
             is_usage_limit: false,
+            is_websocket_connection_limit,
         }),
         "response.incomplete" => Some(WsTerminalEvent {
             status_code: 502,
             usage: parse_ws_usage(&value),
             error: error.or_else(|| Some("连接中断（可能是网络波动或客户端主动取消）".to_string())),
             is_usage_limit: false,
+            is_websocket_connection_limit: false,
         }),
         _ => None,
     }
+}
+
+fn is_websocket_connection_limit_error(
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) -> bool {
+    error_code
+        .is_some_and(|code| code.eq_ignore_ascii_case(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE))
+        || error_message.is_some_and(|message| {
+            message
+                .to_ascii_lowercase()
+                .contains("responses websocket connection limit reached")
+        })
 }
 
 fn is_previous_response_not_found_terminal(terminal: &WsTerminalEvent) -> bool {
