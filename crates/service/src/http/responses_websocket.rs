@@ -354,7 +354,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     first_log.route_strategy = Some(upstream.route_strategy.to_string());
     first_log.route_source = Some(upstream.route_source.to_string());
     let first_attempted_account_ids = HashSet::from([upstream.account_id.clone()]);
-    let first_pending = PendingWsRequestState {
+    let mut first_pending = PendingWsRequestState {
         log: first_log,
         prepared: prepared_first.clone(),
         forwarded_upstream_event: false,
@@ -372,6 +372,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         retried_missing_tool_call_context: false,
     };
 
+    let mut completed_tool_calls = CompletedWsToolCallCache::default();
     if let Err(err) = upstream
         .stream
         .send(UpstreamMessage::Text(
@@ -379,31 +380,54 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         ))
         .await
     {
-        finalize_ws_request_log(
-            &context,
-            &first_pending.log,
-            Some(upstream.account_id.as_str()),
-            Some(upstream.upstream_url.as_str()),
-            502,
-            crate::gateway::RequestLogUsage::default(),
-            Some(crate::gateway::bilingual_error(
-                "发送上游 WebSocket 首帧失败",
-                format!("send first upstream websocket frame failed: {err}"),
-            )),
+        let previous_account_id = upstream.account_id.clone();
+        log::warn!(
+            "event=responses_ws_initial_stale_send account_id={} frame_bytes={} err={err}",
+            previous_account_id,
+            first_pending.prepared.text.len(),
         );
-        send_ws_error_and_close(
-            &mut socket,
-            WsSessionError::bad_gateway_bilingual(
-                "发送上游 WebSocket 首帧失败",
-                format!("send first upstream websocket frame failed: {err}"),
-            ),
-            context.prefer_raw_errors,
+        let _ = upstream.stream.close(None).await;
+        match reconnect_upstream_for_pending_request(
+            &context,
+            &mut first_pending,
+            Some(previous_account_id.as_str()),
+            &completed_tool_calls,
         )
-        .await;
-        return;
+        .await
+        {
+            Ok(replacement) => {
+                log::info!(
+                    "event=responses_ws_upstream_reconnected previous_account_id={} account_id={} reason=initial_send",
+                    previous_account_id,
+                    replacement.account_id,
+                );
+                upstream = replacement;
+            }
+            Err(err) => {
+                let log_error = crate::gateway::bilingual_error(
+                    "上游 WebSocket 首帧失败后的有限恢复失败",
+                    format!(
+                        "initial upstream websocket send recovery failed: {}",
+                        err.message
+                    ),
+                );
+                let session_error = WsSessionError::new(err.status, err.code, log_error.clone());
+                finalize_ws_request_log(
+                    &context,
+                    &first_pending.log,
+                    Some(previous_account_id.as_str()),
+                    None,
+                    session_error.status,
+                    crate::gateway::RequestLogUsage::default(),
+                    Some(log_error),
+                );
+                send_ws_error_and_close(&mut socket, session_error, context.prefer_raw_errors)
+                    .await;
+                return;
+            }
+        }
     }
     let mut pending_request = Some(first_pending);
-    let mut completed_tool_calls = CompletedWsToolCallCache::default();
     let mut heartbeat = responses_ws_heartbeat_interval();
 
     loop {

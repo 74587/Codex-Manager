@@ -730,6 +730,76 @@ async fn start_mock_upstream_ws() -> (
     (addr.to_string(), event_rx, capture_rx, handle)
 }
 
+async fn start_mock_upstream_ws_resets_before_first_frame() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<(usize, String)>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind initial-send-reset mock upstream");
+    let addr = listener
+        .local_addr()
+        .expect("initial-send-reset mock upstream addr");
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("accept initial-send-reset upstream");
+        let websocket = accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+            .await
+            .expect("accept initial-send-reset websocket handshake");
+        let raw_stream = websocket
+            .into_inner()
+            .into_std()
+            .expect("convert initial-send-reset stream");
+        force_tcp_reset(&raw_stream);
+        drop(raw_stream);
+
+        let (replacement_stream, _) = listener
+            .accept()
+            .await
+            .expect("accept replacement initial-send-reset upstream");
+        let upstream_config = WebSocketConfig::default()
+            .max_message_size(Some(TEST_LARGE_RESPONSES_WS_FRAME_BYTES * 2))
+            .max_frame_size(Some(TEST_LARGE_RESPONSES_WS_FRAME_BYTES * 2));
+        let mut replacement = accept_hdr_async_with_config(
+            replacement_stream,
+            |_: &Request, response: Response| Ok(response),
+            Some(upstream_config),
+        )
+        .await
+        .expect("accept replacement initial-send-reset websocket handshake");
+        let text = match replacement.next().await {
+            Some(Ok(Message::Text(text))) => text.to_string(),
+            other => {
+                panic!("expected replacement initial-send-reset response.create, got {other:?}")
+            }
+        };
+        event_tx
+            .send((1, text))
+            .expect("record replacement initial-send-reset request");
+        for payload in [
+            serde_json::json!({
+                "type": "response.created",
+                "response": { "id": "resp_ws_initial_send_recovery" }
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": { "id": "resp_ws_initial_send_recovery" }
+            }),
+        ] {
+            replacement
+                .send(Message::Text(payload.to_string().into()))
+                .await
+                .expect("send initial-send-reset recovery response");
+        }
+        let _ = replacement.next().await;
+    });
+    (addr.to_string(), event_rx, handle)
+}
+
 async fn start_mock_upstream_ws_holds_first_response() -> (
     String,
     tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -2093,6 +2163,125 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
         .await
         .expect("mock upstream shutdown timeout")
         .expect("join mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_recovers_after_initial_upstream_send_failure() {
+    let _guard = crate::test_env_guard();
+    let _http_proxy = EnvGuard::clear("http_proxy");
+    let _https_proxy = EnvGuard::clear("https_proxy");
+    let _all_proxy = EnvGuard::clear("all_proxy");
+    let _upper_http_proxy = EnvGuard::clear("HTTP_PROXY");
+    let _upper_https_proxy = EnvGuard::clear("HTTPS_PROXY");
+    let _upper_all_proxy = EnvGuard::clear("ALL_PROXY");
+    let _no_proxy = EnvGuard::set("NO_PROXY", "127.0.0.1,localhost");
+    let _lower_no_proxy = EnvGuard::clear("no_proxy");
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-initial-send-recovery");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, upstream_handle) =
+        start_mock_upstream_ws_resets_before_first_frame().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_initial_send_recovery",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_initial_send_recovery",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    let image_data = "A".repeat(TEST_LARGE_RESPONSES_WS_FRAME_BYTES);
+    let payload = serde_json::json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "store": true,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "continue after reconnecting the image-heavy thread" },
+                {
+                    "type": "input_image",
+                    "image_url": format!("data:image/png;base64,{image_data}")
+                }
+            ]
+        }]
+    })
+    .to_string();
+    assert!(payload.len() > 16 * 1024 * 1024);
+    client_ws
+        .send(Message::Text(payload.into()))
+        .await
+        .expect("send initial image-heavy response.create");
+
+    let (round, forwarded) = tokio::time::timeout(Duration::from_secs(30), upstream_events.recv())
+        .await
+        .expect("initial-send recovery frame timeout")
+        .expect("initial-send recovery frame channel");
+    assert_eq!(
+        round, 1,
+        "the first upstream socket must not receive a frame"
+    );
+    assert!(forwarded.contains("continue after reconnecting the image-heavy thread"));
+    assert!(forwarded.contains("data:image/png;base64,"));
+
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), client_ws.next())
+            .await
+            .expect("initial-send recovery response timeout")
+            .expect("initial-send recovery client event")
+            .expect("initial-send recovery client event result");
+        match event {
+            Message::Text(text) if text.contains("\"response.completed\"") => break,
+            Message::Text(text) if text.contains("\"type\":\"error\"") => {
+                panic!("initial-send recovery error escaped to client: {text}");
+            }
+            Message::Text(_) => {}
+            other => panic!("unexpected initial-send recovery event: {other:?}"),
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let request_logs = storage
+        .list_request_logs(None, 10)
+        .expect("list initial-send recovery request logs");
+    let ws_logs = request_logs
+        .iter()
+        .filter(|item| item.request_type.as_deref() == Some("ws"))
+        .collect::<Vec<_>>();
+    assert_eq!(ws_logs.len(), 1);
+    assert_eq!(ws_logs[0].status_code, Some(200));
+
+    let _ = client_ws.close(None).await;
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(10), server_handle)
+        .await
+        .expect("front proxy initial-send recovery shutdown timeout")
+        .expect("join initial-send recovery front proxy");
+    tokio::time::timeout(Duration::from_secs(10), upstream_handle)
+        .await
+        .expect("mock upstream initial-send recovery shutdown timeout")
+        .expect("join initial-send recovery mock upstream");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
