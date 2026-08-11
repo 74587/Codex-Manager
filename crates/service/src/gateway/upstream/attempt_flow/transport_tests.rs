@@ -894,7 +894,7 @@ fn websocket_upstream_request_text_from_http_body_wraps_response_create() {
     );
     assert_eq!(
         value.get("stream").and_then(serde_json::Value::as_bool),
-        Some(true)
+        None
     );
     assert_eq!(
         value
@@ -943,7 +943,7 @@ fn send_websocket_upstream_request_builds_valid_handshake_and_stops_on_completed
     let response_body = response.read_all_bytes().expect("read websocket body");
     assert_eq!(
         response_body.as_ref(),
-        b"data: {\"type\":\"response.completed\"}\n\n"
+        b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
     );
 
     let headers = headers_rx
@@ -991,7 +991,7 @@ fn send_websocket_upstream_request_builds_valid_handshake_and_stops_on_completed
 }
 
 #[test]
-fn send_websocket_upstream_request_keeps_http_fallback_after_incomplete_probe() {
+fn send_websocket_upstream_request_does_not_cooldown_after_application_failure() {
     let _env_lock = crate::test_env_guard();
     let _reload_guard = RuntimeConfigReloadGuard;
     let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
@@ -1014,15 +1014,11 @@ fn send_websocket_upstream_request_keeps_http_fallback_after_incomplete_probe() 
         .expect("read incomplete websocket probe body");
     assert!(String::from_utf8_lossy(response_body.as_ref()).contains("response.failed"));
 
-    let second_attempt = super::send_websocket_upstream_request(
-        url.as_str(),
-        "acct_ws_incomplete_probe",
-        Some(Instant::now() + Duration::from_secs(5)),
-        &[],
-        &body,
-    )
-    .expect_err("the next probe must stay on HTTP during cooldown");
-    assert!(second_attempt.contains("continuing with HTTP"));
+    assert!(
+        super::is_websocket_upstream_transport_healthy_terminal_text(
+            r#"{"type":"response.failed"}"#
+        )
+    );
     handle.join().expect("join incomplete websocket upstream");
 }
 
@@ -1064,7 +1060,7 @@ fn send_websocket_upstream_request_uses_system_environment_proxy() {
         .expect("read proxy websocket body");
     assert_eq!(
         response_body.as_ref(),
-        b"data: {\"type\":\"response.completed\"}\n\n"
+        b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
     );
     assert_eq!(
         connect_rx

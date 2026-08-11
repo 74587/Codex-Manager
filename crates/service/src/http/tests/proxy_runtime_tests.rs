@@ -695,6 +695,14 @@ async fn start_mock_upstream_ws() -> (
                 ))
                 .await
                 .expect("send response.created");
+            websocket
+                .send(Message::Text(
+                    "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_1\"}}"
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .expect("send first response.completed");
         }
         if let Some(Ok(Message::Text(text))) = websocket.next().await {
             frames.push(text.to_string());
@@ -720,6 +728,79 @@ async fn start_mock_upstream_ws() -> (
         });
     });
     (addr.to_string(), event_rx, capture_rx, handle)
+}
+
+async fn start_mock_upstream_ws_holds_first_response() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind in-flight mock upstream");
+    let addr = listener.local_addr().expect("in-flight mock upstream addr");
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("accept in-flight mock upstream");
+        let mut websocket =
+            accept_hdr_async(stream, |_: &Request, response: Response| Ok(response))
+                .await
+                .expect("accept in-flight mock upstream websocket handshake");
+        let first = match websocket.next().await {
+            Some(Ok(Message::Text(text))) => text.to_string(),
+            other => panic!("expected first in-flight response.create, got {other:?}"),
+        };
+        event_tx
+            .send(first)
+            .expect("record first in-flight response.create");
+        websocket
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "response.created",
+                    "response": { "id": "resp_ws_in_flight" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send in-flight response.created");
+        let _ = release_rx.await;
+        websocket
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": { "id": "resp_ws_in_flight" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send in-flight response.completed");
+        let second = match websocket.next().await {
+            Some(Ok(Message::Text(text))) => text.to_string(),
+            other => panic!("expected second in-flight response.create, got {other:?}"),
+        };
+        event_tx
+            .send(second)
+            .expect("record second in-flight response.create");
+        websocket
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": { "id": "resp_ws_in_flight_follow_up" }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .expect("send in-flight follow-up response.completed");
+    });
+    (addr.to_string(), event_rx, release_tx, handle)
 }
 
 async fn start_mock_upstream_ws_waits_for_heartbeat() -> (
@@ -1536,7 +1617,8 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         serde_json::from_str(&first_upstream_frame).expect("parse first upstream frame");
     assert_eq!(first_payload["type"], "response.create");
     assert_eq!(first_payload["model"], "gpt-5.4-mini");
-    assert_eq!(first_payload["stream"], false);
+    assert!(first_payload.get("stream").is_none());
+    assert!(first_payload.get("background").is_none());
     assert_eq!(first_payload["store"], true);
     assert_eq!(first_payload["service_tier"], "priority");
     assert_eq!(first_payload["generate"], false);
@@ -1555,6 +1637,20 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
             );
         }
         other => panic!("unexpected first client event: {other:?}"),
+    }
+    let first_completed_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("first completed event timeout")
+        .expect("first completed event")
+        .expect("first completed event result");
+    match first_completed_event {
+        Message::Text(text) => {
+            assert!(
+                text.contains("\"response.completed\""),
+                "unexpected first completed event: {text}"
+            );
+        }
+        other => panic!("unexpected first completed event: {other:?}"),
     }
     client_ws
         .send(Message::Text(
@@ -1743,6 +1839,155 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_rejects_overlapping_response_create() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-in-flight");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, release_tx, upstream_handle) =
+        start_mock_upstream_ws_holds_first_response().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_in_flight",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_in_flight",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    let first_request = serde_json::json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "input": "first in-flight request"
+    });
+    client_ws
+        .send(Message::Text(first_request.to_string().into()))
+        .await
+        .expect("send first in-flight request");
+    let first_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+        .await
+        .expect("first in-flight upstream frame timeout")
+        .expect("first in-flight upstream frame");
+    assert!(first_upstream.contains("first in-flight request"));
+
+    let first_created = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("first in-flight response.created timeout")
+        .expect("first in-flight response.created")
+        .expect("first in-flight response.created result");
+    assert!(matches!(first_created, Message::Text(text) if text.contains("response.created")));
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-5.6-sol",
+                "input": "overlapping request"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send overlapping request");
+    let overlap_error = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("overlapping request error timeout")
+        .expect("overlapping request error")
+        .expect("overlapping request error result");
+    match overlap_error {
+        Message::Text(text) => {
+            let value: serde_json::Value =
+                serde_json::from_str(text.as_ref()).expect("parse overlapping request error");
+            assert_eq!(value["type"], "error");
+            assert_eq!(value["error"]["code"], "response_in_flight");
+        }
+        other => panic!("unexpected overlapping request result: {other:?}"),
+    }
+    assert!(
+        upstream_events.try_recv().is_err(),
+        "overlapping response.create must not reach the upstream"
+    );
+
+    client_ws
+        .send(Message::Binary(vec![1, 2, 3].into()))
+        .await
+        .expect("send unsupported binary request");
+    let binary_error = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("binary request error timeout")
+        .expect("binary request error")
+        .expect("binary request error result");
+    assert!(
+        matches!(binary_error, Message::Text(text) if text.contains("response.create text frames only"))
+    );
+
+    release_tx
+        .send(())
+        .expect("release first in-flight response");
+    let first_completed = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("first in-flight response.completed timeout")
+        .expect("first in-flight response.completed")
+        .expect("first in-flight response.completed result");
+    assert!(matches!(first_completed, Message::Text(text) if text.contains("response.completed")));
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-5.6-sol",
+                "input": "follow-up after completion"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send follow-up after completion");
+    let second_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+        .await
+        .expect("follow-up upstream frame timeout")
+        .expect("follow-up upstream frame");
+    assert!(second_upstream.contains("follow-up after completion"));
+    let second_completed = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("follow-up response.completed timeout")
+        .expect("follow-up response.completed")
+        .expect("follow-up response.completed result");
+    assert!(matches!(second_completed, Message::Text(text) if text.contains("response.completed")));
+
+    client_ws.close(None).await.expect("close client websocket");
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server_handle)
+        .await
+        .expect("front proxy in-flight shutdown timeout")
+        .expect("join front proxy in-flight");
+    tokio::time::timeout(Duration::from_secs(5), upstream_handle)
+        .await
+        .expect("mock upstream in-flight shutdown timeout")
+        .expect("join mock upstream in-flight");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn official_responses_websocket_accepts_large_image_context_frame() {
     let _guard = crate::test_env_guard();
     let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-large-image-context");
@@ -1809,6 +2054,17 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
         .expect("large image context frame channel");
     assert!(forwarded.contains("data:image/png;base64,"));
     assert!(forwarded.len() > 16 * 1024 * 1024);
+
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), client_ws.next())
+            .await
+            .expect("large image response event timeout")
+            .expect("large image response event")
+            .expect("large image response event result");
+        if matches!(event, Message::Text(ref text) if text.contains("\"response.completed\"")) {
+            break;
+        }
+    }
 
     client_ws
         .send(Message::Text(

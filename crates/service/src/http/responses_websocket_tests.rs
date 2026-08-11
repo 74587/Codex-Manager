@@ -648,7 +648,6 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         "reasoning",
         "service_tier",
         "store",
-        "stream",
         "text",
         "tool_choice",
         "tools",
@@ -662,6 +661,8 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
     assert_eq!(value["instructions"], "  stay exactly\n");
     assert_eq!(value["previous_response_id"], "resp_previous");
     assert_eq!(value["generate"], false);
+    assert!(object.get("stream").is_none());
+    assert!(object.get("background").is_none());
     assert_eq!(value["reasoning"]["context"], "current_turn");
     assert_eq!(value["reasoning"]["summary"], "auto");
     assert_eq!(value["client_metadata"]["source"], "ws-snapshot");
