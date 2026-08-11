@@ -16,9 +16,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 struct EnvGuard {
@@ -28,6 +30,7 @@ struct EnvGuard {
 
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TEST_ZSTD_MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
+const TEST_LARGE_RESPONSES_WS_FRAME_BYTES: usize = 17 * 1024 * 1024;
 
 impl EnvGuard {
     /// 函数 `set`
@@ -657,8 +660,12 @@ async fn start_mock_upstream_ws() -> (
             None::<(String, HashMap<String, String>)>,
         ));
         let captured_headers_clone = captured_headers.clone();
-        let mut websocket =
-            accept_hdr_async(stream, move |request: &Request, response: Response| {
+        let upstream_config = WebSocketConfig::default()
+            .max_message_size(Some(TEST_LARGE_RESPONSES_WS_FRAME_BYTES * 2))
+            .max_frame_size(Some(TEST_LARGE_RESPONSES_WS_FRAME_BYTES * 2));
+        let mut websocket = accept_hdr_async_with_config(
+            stream,
+            move |request: &Request, response: Response| {
                 let mut headers = HashMap::new();
                 for (name, value) in request.headers() {
                     if let Ok(text) = value.to_str() {
@@ -670,9 +677,11 @@ async fn start_mock_upstream_ws() -> (
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 *guard = Some((request.uri().path().to_string(), headers));
                 Ok(response)
-            })
-            .await
-            .expect("accept websocket handshake");
+            },
+            Some(upstream_config),
+        )
+        .await
+        .expect("accept websocket handshake");
 
         let mut frames = Vec::new();
         if let Some(Ok(Message::Text(text))) = websocket.next().await {
@@ -1728,6 +1737,103 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         .expect("front proxy shutdown timeout")
         .expect("join front proxy");
     tokio::time::timeout(Duration::from_secs(5), upstream_handle)
+        .await
+        .expect("mock upstream shutdown timeout")
+        .expect("join mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn official_responses_websocket_accepts_large_image_context_frame() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-large-image-context");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, _capture_rx, upstream_handle) =
+        start_mock_upstream_ws().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_large_image_context",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_large_image_context",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    let image_data = "A".repeat(TEST_LARGE_RESPONSES_WS_FRAME_BYTES);
+    let payload = serde_json::json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "continue with the existing image context" },
+                {
+                    "type": "input_image",
+                    "image_url": format!("data:image/png;base64,{image_data}")
+                }
+            ]
+        }]
+    })
+    .to_string();
+    assert!(payload.len() > 16 * 1024 * 1024);
+
+    client_ws
+        .send(Message::Text(payload.into()))
+        .await
+        .expect("send large image context frame");
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(10), upstream_events.recv())
+        .await
+        .expect("large image context frame timeout")
+        .expect("large image context frame channel");
+    assert!(forwarded.contains("data:image/png;base64,"));
+    assert!(forwarded.len() > 16 * 1024 * 1024);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "previous_response_id": "resp_ws_1",
+                "input": "follow up"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send follow-up frame");
+    let _ = tokio::time::timeout(Duration::from_secs(10), upstream_events.recv())
+        .await
+        .expect("follow-up frame timeout")
+        .expect("follow-up frame channel");
+
+    client_ws.close(None).await.expect("close client websocket");
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(10), server_handle)
+        .await
+        .expect("front proxy shutdown timeout")
+        .expect("join front proxy");
+    tokio::time::timeout(Duration::from_secs(10), upstream_handle)
         .await
         .expect("mock upstream shutdown timeout")
         .expect("join mock upstream");

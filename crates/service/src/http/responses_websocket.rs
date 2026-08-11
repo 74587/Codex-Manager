@@ -16,6 +16,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::client::{
     Request as WsClientRequest, Response as WsClientResponse,
 };
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tokio_tungstenite::{client_async_tls_with_config, connect_async_tls_with_config};
 
@@ -39,6 +40,9 @@ const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
 const RESPONSES_WS_CONTEXT_REBASE_ERROR_CODE: &str = "responses_websocket_context_rebase_failed";
 const RESPONSES_WEBSOCKETS_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const MAX_BUFFERED_WS_PREAMBLE_EVENTS: usize = 16;
+// Resumed image-heavy turns are serialized as one response.create text frame. Keep the
+// transport bounded, but large enough to match the existing 256 MiB compressed-body safety cap.
+const RESPONSES_WS_MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
 // Keep both WebSocket legs active across long turns; TCP keepalive does not prevent
 // application-layer proxy/NAT idle eviction.
 const RESPONSES_WS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -294,9 +298,11 @@ pub(super) async fn upgrade_responses_websocket(request: HttpRequest<Body>) -> R
         }
     };
 
-    ws.on_upgrade(move |socket| async move {
-        run_responses_websocket_session(socket, context).await;
-    })
+    ws.max_message_size(RESPONSES_WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(RESPONSES_WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| async move {
+            run_responses_websocket_session(socket, context).await;
+        })
 }
 
 async fn run_responses_websocket_session(mut socket: WebSocket, context: WsRequestContext) {
@@ -542,6 +548,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         break;
                     }
                     Err(err) => {
+                        log::warn!("event=responses_ws_client_receive_failed err={err}");
                         send_ws_error_and_close(
                             &mut socket,
                             WsSessionError::bad_request_bilingual(
@@ -1142,6 +1149,7 @@ async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String
                 ));
             }
             Err(err) => {
+                log::warn!("event=responses_ws_client_initial_receive_failed err={err}");
                 return Err(WsSessionError::bad_request_bilingual(
                     "接收首个 WebSocket 帧失败",
                     format!("receive initial websocket frame failed: {err}"),
@@ -1956,17 +1964,28 @@ pub(crate) async fn connect_upstream_websocket_request_detailed(
 > {
     ensure_rustls_crypto_provider();
     let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) else {
-        return connect_async_tls_with_config(request, None, false, None)
-            .await
-            .map_err(WsConnectError::from_tungstenite);
+        return connect_async_tls_with_config(
+            request,
+            Some(responses_ws_transport_config()),
+            false,
+            None,
+        )
+        .await
+        .map_err(WsConnectError::from_tungstenite);
     };
 
     let stream = connect_websocket_proxy_tcp(ws_url, proxy_url)
         .await
         .map_err(WsConnectError::from_message)?;
-    client_async_tls_with_config(request, stream, None, None)
+    client_async_tls_with_config(request, stream, Some(responses_ws_transport_config()), None)
         .await
         .map_err(WsConnectError::from_tungstenite)
+}
+
+fn responses_ws_transport_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES))
 }
 
 async fn connect_websocket_proxy_tcp(ws_url: &str, proxy_url: &str) -> Result<TcpStream, String> {
