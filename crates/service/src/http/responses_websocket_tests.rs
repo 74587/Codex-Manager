@@ -8,7 +8,7 @@ use super::{
     CompletedWsToolCallCache, WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
 };
 use axum::http::{HeaderMap, HeaderValue};
-use codexmanager_core::storage::{now_ts, Account, ApiKey, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, ApiKey, ConversationBinding, Storage, Token};
 use serde_json::{json, Value};
 
 fn sample_api_key() -> ApiKey {
@@ -135,6 +135,148 @@ fn websocket_initial_and_terminal_failover_candidates_stay_in_key_group() {
         .candidates
         .iter()
         .all(|(account, _)| account.group_name.as_deref() == Some("team-a")));
+}
+
+#[test]
+fn websocket_reselection_excludes_disabled_and_runtime_limited_accounts() {
+    let _guard = crate::test_env_guard();
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let mut api_key = sample_api_key();
+    api_key.id = "gk-ws-reselection".to_string();
+    api_key.key_hash = "hash-ws-reselection".to_string();
+    storage.insert_api_key(&api_key).expect("insert api key");
+    insert_ws_candidate(&storage, "acc-disabled", 0, "team-a");
+    insert_ws_candidate(&storage, "acc-available", 1, "team-a");
+    storage
+        .update_account_status("acc-disabled", "disabled")
+        .expect("disable account");
+    crate::gateway::invalidate_candidate_cache();
+
+    let routed = crate::gateway::gateway_collect_routed_candidates_for_ws(
+        &storage,
+        &api_key.id,
+        Some("gpt-5.4"),
+        Some("conversation-reselection"),
+        Some(crate::gateway::conversation_binding::RouteConversationSource::NativeConversation),
+    )
+    .expect("collect websocket candidates");
+    assert_eq!(
+        routed
+            .candidates
+            .iter()
+            .map(|(account, _)| account.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acc-available"]
+    );
+    assert!(crate::gateway::gateway_ws_account_requires_switch(
+        &routed,
+        "acc-disabled"
+    ));
+
+    crate::gateway::gateway_mark_account_cooldown_for_status("acc-available", 429);
+    let cooled = crate::gateway::gateway_collect_routed_candidates_for_ws(
+        &storage,
+        &api_key.id,
+        Some("gpt-5.4"),
+        Some("conversation-reselection"),
+        Some(crate::gateway::conversation_binding::RouteConversationSource::NativeConversation),
+    )
+    .expect("collect websocket candidates after cooldown");
+    assert!(cooled.candidates.is_empty());
+    assert!(crate::gateway::gateway_ws_account_requires_switch(
+        &cooled,
+        "acc-available"
+    ));
+    crate::gateway::reload_runtime_config_from_env();
+}
+
+#[test]
+fn websocket_reselection_keeps_thread_binding_but_switches_when_bound_account_is_unavailable() {
+    let _guard = crate::test_env_guard();
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let mut api_key = sample_api_key();
+    api_key.id = "gk-ws-thread-reselection".to_string();
+    api_key.key_hash = "hash-ws-thread-reselection".to_string();
+    storage.insert_api_key(&api_key).expect("insert api key");
+    insert_ws_candidate(&storage, "acc-bound", 0, "team-a");
+    insert_ws_candidate(&storage, "acc-next", 1, "team-a");
+    let now = now_ts();
+    storage
+        .upsert_conversation_binding(&ConversationBinding {
+            platform_key_hash: api_key.key_hash.clone(),
+            conversation_id: "conversation-thread".to_string(),
+            account_id: "acc-bound".to_string(),
+            thread_epoch: 1,
+            thread_anchor: "conversation-thread".to_string(),
+            status: "active".to_string(),
+            last_model: Some("gpt-5.4".to_string()),
+            last_switch_reason: None,
+            created_at: now,
+            updated_at: now,
+            last_used_at: now,
+        })
+        .expect("insert conversation binding");
+    storage
+        .update_account_status("acc-bound", "disabled")
+        .expect("disable bound account");
+    crate::gateway::invalidate_candidate_cache();
+
+    let routed = crate::gateway::gateway_collect_routed_candidates_for_ws(
+        &storage,
+        &api_key.id,
+        Some("gpt-5.4"),
+        Some("conversation-thread"),
+        Some(crate::gateway::conversation_binding::RouteConversationSource::NativeConversation),
+    )
+    .expect("collect websocket candidates for bound thread");
+    assert_eq!(routed.candidates[0].0.id, "acc-next");
+    assert!(
+        !routed
+            .conversation_routing
+            .as_ref()
+            .expect("conversation routing")
+            .bound_account_selectable
+    );
+    assert!(crate::gateway::gateway_ws_account_requires_switch(
+        &routed,
+        "acc-bound"
+    ));
+}
+
+#[test]
+fn websocket_reselection_honors_manual_preference_without_conversation_binding() {
+    let mut preferred = sample_account();
+    preferred.id = "acc-preferred".to_string();
+    let mut current = sample_account();
+    current.id = "acc-current".to_string();
+    let token = |account_id: &str| Token {
+        account_id: account_id.to_string(),
+        id_token: "header.payload.sig".to_string(),
+        access_token: "header.payload.sig".to_string(),
+        refresh_token: "refresh".to_string(),
+        api_key_access_token: None,
+        last_refresh: now_ts(),
+    };
+    let routed = crate::gateway::GatewayRoutedCandidates {
+        candidates: vec![
+            (preferred, token("acc-preferred")),
+            (current, token("acc-current")),
+        ],
+        route_strategy: "manual_preferred_account",
+        route_source: "manual_preferred_account",
+        conversation_routing: None,
+    };
+
+    assert!(crate::gateway::gateway_ws_account_requires_switch(
+        &routed,
+        "acc-current"
+    ));
+    assert!(!crate::gateway::gateway_ws_account_requires_switch(
+        &routed,
+        "acc-preferred"
+    ));
 }
 
 fn sample_incoming_headers(
@@ -403,6 +545,8 @@ fn websocket_frame_aligns_prompt_cache_key_with_native_conversation_anchor() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers(Some("conversation-1"), None),
         prompt_cache_key: Some("sticky-thread".to_string()),
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -430,6 +574,8 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -475,6 +621,8 @@ fn upstream_websocket_request_preserves_agent_assertion_and_fedramp() {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::default(),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -558,6 +706,8 @@ fn websocket_frame_merges_header_metadata_into_client_metadata() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -589,6 +739,8 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -694,6 +846,8 @@ fn websocket_response_create_uses_minimal_fallback_for_missing_or_blank_instruct
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -728,6 +882,8 @@ fn websocket_logs_client_ultra_and_sends_upstream_max() {
         api_key: sample_api_key(),
         incoming_headers: sample_incoming_headers_with_metadata(),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
@@ -1011,6 +1167,8 @@ fn upstream_websocket_account_rebase_strips_session_affinity_headers() {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
         prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
         effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
         prefer_raw_errors: false,
     };
