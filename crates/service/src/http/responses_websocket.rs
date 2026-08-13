@@ -32,7 +32,8 @@ use crate::storage_helpers::open_storage;
 mod responses_websocket_rebase;
 
 use responses_websocket_rebase::{
-    rebase_response_create_for_account_change, rebase_response_create_for_missing_tool_call,
+    expand_response_create_previous_response, rebase_response_create_for_account_change,
+    rebase_response_create_for_missing_tool_call, CompletedWsResponseCache,
     CompletedWsToolCallCache, WsToolCallKind,
 };
 
@@ -66,6 +67,7 @@ struct WsRequestContext {
 #[derive(Clone)]
 struct PreparedClientFrame {
     text: String,
+    input: Value,
     client_model: Option<String>,
     model: Option<String>,
     previous_response_id: Option<String>,
@@ -346,25 +348,28 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         "unresolved",
         "initial_upstream_connect",
     );
-    let mut upstream =
-        match connect_upstream_websocket_with_timeout(&context, prepared_first.model.as_deref())
-            .await
-        {
-            Ok(stream) => stream,
-            Err(err) => {
-                finalize_ws_request_log(
-                    &context,
-                    &first_log,
-                    None,
-                    None,
-                    err.status,
-                    crate::gateway::RequestLogUsage::default(),
-                    Some(err.message.clone()),
-                );
-                send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
-                return;
-            }
-        };
+    let mut upstream = match connect_upstream_websocket_with_timeout(
+        &context,
+        prepared_first.model.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            finalize_ws_request_log(
+                &context,
+                &first_log,
+                None,
+                None,
+                err.status,
+                crate::gateway::RequestLogUsage::default(),
+                Some(err.message.clone()),
+            );
+            send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
+            return;
+        }
+    };
     first_log.route_strategy = Some(upstream.route_strategy.to_string());
     first_log.route_source = Some(upstream.route_source.to_string());
     let first_attempted_account_ids = HashSet::from([upstream.account_id.clone()]);
@@ -388,6 +393,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     };
 
     let mut completed_tool_calls = CompletedWsToolCallCache::default();
+    let mut completed_responses = CompletedWsResponseCache::default();
     if let Err(err) = upstream
         .stream
         .send(UpstreamMessage::Text(
@@ -406,6 +412,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
             &context,
             &mut first_pending,
             Some(previous_account_id.as_str()),
+            &completed_responses,
             &completed_tool_calls,
         )
         .await
@@ -645,6 +652,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &context,
                                         &mut current_pending,
                                         Some(previous_account_id.as_str()),
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -689,6 +697,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &context,
                                         &mut current_pending,
                                         Some(previous_account_id.as_str()),
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -775,6 +784,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             pending_request
                                 .as_mut()
                                 .expect("pending request checked above"),
+                            &completed_responses,
                             &completed_tool_calls,
                             "early_eof",
                         )
@@ -832,6 +842,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         &mut socket,
                         &context,
                         previous_account_id.as_str(),
+                        &completed_responses,
                         &completed_tool_calls,
                     )
                     .await
@@ -865,6 +876,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &context,
                                         &mut upstream,
                                         pending,
+                                        &completed_responses,
                                         &completed_tool_calls,
                                         "connection_limit_reached",
                                     )
@@ -908,6 +920,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &mut socket,
                                         &context,
                                         previous_account_id.as_str(),
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -946,6 +959,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &mut upstream,
                                         pending,
                                         &terminal,
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -983,6 +997,13 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             }
 
                             if let Some(mut pending) = pending_request.take() {
+                                if terminal.status_code == 200 {
+                                    cache_completed_ws_response(
+                                        &mut completed_responses,
+                                        &pending.prepared,
+                                        text.as_str(),
+                                    );
+                                }
                                 if let Err(err) = flush_ws_upstream_preamble(&mut socket, &mut pending).await {
                                     log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
                                     break;
@@ -1084,6 +1105,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 pending_request
                                     .as_mut()
                                     .expect("pending request checked above"),
+                                &completed_responses,
                                 &completed_tool_calls,
                                 "early_close",
                             )
@@ -1141,6 +1163,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             &mut socket,
                             &context,
                             previous_account_id.as_str(),
+                            &completed_responses,
                             &completed_tool_calls,
                         )
                         .await
@@ -1171,6 +1194,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 pending_request
                                     .as_mut()
                                     .expect("pending request checked above"),
+                                &completed_responses,
                                 &completed_tool_calls,
                                 "early_read_error",
                             )
@@ -1228,6 +1252,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             &mut socket,
                             &context,
                             previous_account_id.as_str(),
+                            &completed_responses,
                             &completed_tool_calls,
                         )
                         .await
@@ -1648,6 +1673,7 @@ fn rewrite_client_frame(
 
     Ok(PreparedClientFrame {
         text,
+        input: request.input,
         client_model: client_model_for_log,
         model: Some(request.model),
         previous_response_id: request.previous_response_id,
@@ -1832,6 +1858,7 @@ fn ws_account_is_unavailable(
 async fn connect_upstream_websocket(
     context: &WsRequestContext,
     model: Option<&str>,
+    previous_account_id: Option<&str>,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let storage = open_storage().ok_or_else(|| {
         WsSessionError::service_unavailable_bilingual("存储不可用", "storage unavailable")
@@ -1860,8 +1887,14 @@ async fn connect_upstream_websocket(
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
     let mut last_error = None;
     for (account, token) in routed.candidates {
-        match connect_account_upstream_websocket(context, &account, token, ws_url.as_str(), false)
-            .await
+        match connect_account_upstream_websocket(
+            context,
+            &account,
+            token,
+            ws_url.as_str(),
+            previous_account_id.is_some_and(|account_id| account_id != account.id),
+        )
+        .await
         {
             Ok(stream) => {
                 return Ok(ConnectedUpstreamWebsocket {
@@ -1893,10 +1926,16 @@ async fn connect_upstream_websocket(
 async fn connect_upstream_websocket_with_timeout(
     context: &WsRequestContext,
     model: Option<&str>,
+    previous_account_id: Option<&str>,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let connect_timeout =
         crate::gateway::current_upstream_connect_timeout().max(std::time::Duration::from_secs(1));
-    match tokio::time::timeout(connect_timeout, connect_upstream_websocket(context, model)).await {
+    match tokio::time::timeout(
+        connect_timeout,
+        connect_upstream_websocket(context, model, previous_account_id),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(WsSessionError::new(
             504,
@@ -1916,26 +1955,25 @@ async fn reconnect_upstream_for_pending_request(
     context: &WsRequestContext,
     pending: &mut PendingWsRequestState,
     previous_account_id: Option<&str>,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
-    if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
-        return Err(WsSessionError::context_rebase_failed(
-            "无法在新 WebSocket 连接中恢复 store=false 的 previous_response_id；请重新发送完整上下文",
-        ));
-    }
-    let mut replacement =
-        connect_upstream_websocket_with_timeout(context, pending.prepared.model.as_deref()).await?;
-    if previous_account_id.is_some_and(|account_id| account_id != replacement.account_id) {
-        match rebase_ws_request_for_account_change(
-            pending.prepared.text.as_str(),
-            completed_tool_calls,
-        ) {
-            Ok(rebased) => pending.prepared.text = rebased,
-            Err(err) => {
-                let _ = replacement.stream.close(None).await;
-                return Err(err);
-            }
-        }
+    let mut replacement = connect_upstream_websocket_with_timeout(
+        context,
+        pending.prepared.model.as_deref(),
+        previous_account_id,
+    )
+    .await?;
+    let account_changed =
+        previous_account_id.is_some_and(|account_id| account_id != replacement.account_id);
+    if let Err(err) = prepare_ws_request_for_new_connection(
+        pending,
+        completed_responses,
+        completed_tool_calls,
+        account_changed,
+    ) {
+        let _ = replacement.stream.close(None).await;
+        return Err(err);
     }
 
     pending.attempted_account_ids.clear();
@@ -1972,22 +2010,12 @@ async fn retry_pending_request_after_upstream_disconnect(
     context: &WsRequestContext,
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
     reason: &str,
 ) -> Result<bool, WsSessionError> {
     if pending.forwarded_non_preamble_event || pending.replayed_after_upstream_disconnect {
         return Ok(false);
-    }
-
-    // A continuation sent with store=false depends on the old upstream
-    // connection's in-memory previous-response cache. A replacement upstream
-    // connection cannot safely replay only that incremental input. Let the
-    // client establish a new connection and provide the full context instead
-    // of silently creating a partial or duplicated continuation.
-    if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
-        return Err(WsSessionError::context_rebase_failed(
-            "无法安全恢复 store=false 的增量 WebSocket 请求；请在新连接中重新发送完整上下文",
-        ));
     }
 
     // Once a continuation has emitted a preamble, replaying the same request
@@ -2009,6 +2037,7 @@ async fn retry_pending_request_after_upstream_disconnect(
         context,
         pending,
         Some(previous_account_id.as_str()),
+        completed_responses,
         completed_tool_calls,
     )
     .await?;
@@ -2026,6 +2055,7 @@ async fn wait_for_client_request_and_reconnect_upstream(
     socket: &mut WebSocket,
     context: &WsRequestContext,
     previous_account_id: &str,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<Option<(ConnectedUpstreamWebsocket, PendingWsRequestState)>, WsSessionError> {
     let Some(text) = receive_initial_request(socket).await? else {
@@ -2056,6 +2086,7 @@ async fn wait_for_client_request_and_reconnect_upstream(
         context,
         &mut pending,
         Some(previous_account_id),
+        completed_responses,
         completed_tool_calls,
     )
     .await
@@ -3068,9 +3099,70 @@ fn finalize_ws_request_log(
 fn ws_context_rebase_error(raw_message: impl Into<String>) -> WsSessionError {
     let raw_message = raw_message.into();
     WsSessionError::context_rebase_failed(crate::gateway::bilingual_error(
-        "切换账号时无法重建工具调用上下文",
+        "无法为新的上游 WebSocket 重建完整上下文",
         raw_message,
     ))
+}
+
+fn prepare_ws_request_for_new_connection(
+    pending: &mut PendingWsRequestState,
+    completed_responses: &CompletedWsResponseCache,
+    completed_tool_calls: &CompletedWsToolCallCache,
+    account_changed: bool,
+) -> Result<(), WsSessionError> {
+    if pending.prepared.previous_response_id.is_some()
+        && (!pending.prepared.store || account_changed)
+    {
+        let expanded = expand_response_create_previous_response(
+            pending.prepared.text.as_str(),
+            completed_responses,
+        )
+        .map_err(ws_context_rebase_error)?
+        .ok_or_else(|| {
+            ws_context_rebase_error(
+                "response.create declared previous_response_id but no recoverable id was found",
+            )
+        })?;
+        pending.prepared.text = expanded;
+        pending.prepared.previous_response_id = None;
+        pending.prepared.input = ws_request_input_from_text(pending.prepared.text.as_str())?;
+    }
+    if account_changed {
+        pending.prepared.text = rebase_ws_request_for_account_change(
+            pending.prepared.text.as_str(),
+            completed_tool_calls,
+        )?;
+        pending.prepared.input = ws_request_input_from_text(pending.prepared.text.as_str())?;
+    }
+    Ok(())
+}
+
+fn ws_request_input_from_text(text: &str) -> Result<Value, WsSessionError> {
+    serde_json::from_str::<Value>(text)
+        .map_err(|err| {
+            ws_context_rebase_error(format!("parse recovered response.create failed: {err}"))
+        })?
+        .get("input")
+        .cloned()
+        .ok_or_else(|| ws_context_rebase_error("recovered response.create is missing input"))
+}
+
+fn cache_completed_ws_response(
+    completed_responses: &mut CompletedWsResponseCache,
+    prepared: &PreparedClientFrame,
+    terminal_text: &str,
+) {
+    if let Err(err) = completed_responses.observe_completed_response(
+        terminal_text,
+        prepared.previous_response_id.as_deref(),
+        &prepared.input,
+    ) {
+        log::warn!(
+            "event=responses_ws_response_history_not_cached previous_response_id={} err={}",
+            prepared.previous_response_id.as_deref().unwrap_or("-"),
+            err,
+        );
+    }
 }
 
 fn rebase_ws_request_for_account_change(
@@ -3150,6 +3242,7 @@ async fn try_retry_ws_request_after_terminal(
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
     terminal: &WsTerminalEvent,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<bool, WsSessionError> {
     if terminal.status_code == 200 || pending.forwarded_upstream_event {
@@ -3171,15 +3264,20 @@ async fn try_retry_ws_request_after_terminal(
         if strip_previous_response_id_from_ws_text(pending.prepared.text.as_str()).is_none() {
             return Ok(false);
         }
-        if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
-            return Err(WsSessionError::context_rebase_failed(
-                "previous_response_id 在新 WebSocket 连接中不可用；store=false 时必须重新发送完整上下文",
-            ));
-        }
-        retry_text = Some(rebase_ws_request_for_account_change(
+        let expanded = expand_response_create_previous_response(
             pending.prepared.text.as_str(),
-            completed_tool_calls,
-        )?);
+            completed_responses,
+        )
+        .map_err(ws_context_rebase_error)?
+        .ok_or_else(|| {
+            ws_context_rebase_error(
+                "previous_response_id was rejected and no recoverable response id was found",
+            )
+        })?;
+        pending.prepared.text = expanded;
+        pending.prepared.previous_response_id = None;
+        pending.prepared.input = ws_request_input_from_text(pending.prepared.text.as_str())?;
+        retry_text = Some(pending.prepared.text.clone());
     } else {
         let previous_account_id = upstream.account_id.clone();
         if !try_rotate_ws_upstream_after_terminal(
@@ -3194,16 +3292,20 @@ async fn try_retry_ws_request_after_terminal(
             return Ok(false);
         }
         if upstream.account_id != previous_account_id {
-            retry_text = Some(rebase_ws_request_for_account_change(
-                pending.prepared.text.as_str(),
+            prepare_ws_request_for_new_connection(
+                pending,
+                completed_responses,
                 completed_tool_calls,
-            )?);
+                true,
+            )?;
+            retry_text = Some(pending.prepared.text.clone());
             pending.log.route_strategy = Some(upstream.route_strategy.to_string());
             pending.log.route_source = Some(upstream.route_source.to_string());
             pending.conversation_routing = upstream.conversation_routing.clone();
         }
     }
     let retry_text = retry_text.unwrap_or_else(|| pending.prepared.text.clone());
+    let retry_input = ws_request_input_from_text(retry_text.as_str())?;
     match upstream
         .stream
         .send(UpstreamMessage::Text(retry_text.clone().into()))
@@ -3211,6 +3313,7 @@ async fn try_retry_ws_request_after_terminal(
     {
         Ok(()) => {
             pending.prepared.text = retry_text;
+            pending.prepared.input = retry_input;
             pending.forwarded_upstream_event = false;
             pending.buffered_upstream_preamble.clear();
             pending.buffer_retry_preamble = should_buffer_ws_retry_preamble(
