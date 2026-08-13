@@ -51,6 +51,24 @@ pub(crate) fn prefers_raw_errors_for_tiny_http_request(request: &tiny_http::Requ
     })
 }
 
+pub(crate) fn load_active_gateway_api_key(
+    storage: &codexmanager_core::storage::Storage,
+    platform_key: &str,
+    request_url: &str,
+) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
+    local_validation::load_active_api_key_for_platform_key(storage, platform_key, request_url)
+        .map_err(|err| (err.status_code, err.message))
+}
+
+pub(crate) fn load_active_gateway_api_key_by_id(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    request_url: &str,
+) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
+    local_validation::load_active_api_key_for_id(storage, key_id, request_url)
+        .map_err(|err| (err.status_code, err.message))
+}
+
 pub(crate) fn error_message_for_client(
     _prefers_raw_errors: bool,
     message: impl Into<String>,

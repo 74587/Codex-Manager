@@ -26,7 +26,7 @@ use crate::http::codex_source::{
     X_CODEX_WINDOW_ID_HEADER, X_OPENAI_SUBAGENT_HEADER,
 };
 use crate::http::proxy_response::{text_error_response, text_response};
-use crate::storage_helpers::{hash_platform_key, open_storage};
+use crate::storage_helpers::open_storage;
 
 #[path = "responses_websocket_rebase.rs"]
 mod responses_websocket_rebase;
@@ -324,13 +324,21 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         }
     };
 
-    let prepared_first = match rewrite_client_frame(first_text.as_str(), &context) {
-        Ok(prepared) => prepared,
-        Err(err) => {
-            send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
-            return;
-        }
-    };
+    if let Err(err) = validate_ws_api_key_for_new_request(&context).await {
+        record_rejected_ws_request(&context, &err);
+        send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
+        return;
+    }
+
+    let prepared_first =
+        match rewrite_client_frame_with_model_fast_policy(first_text.as_str(), &context).await {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                record_rejected_ws_request(&context, &err);
+                send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
+                return;
+            }
+        };
 
     let mut first_log = begin_ws_request_log(
         &context,
@@ -530,6 +538,31 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     .await;
                                     continue;
                                 }
+                                if let Err(err) = validate_ws_api_key_for_new_request(&context).await {
+                                    record_rejected_ws_request(&context, &err);
+                                    send_ws_error_and_close(
+                                        &mut socket,
+                                        err,
+                                        context.prefer_raw_errors,
+                                    )
+                                    .await;
+                                    let _ = upstream.stream.close(None).await;
+                                    break;
+                                }
+                                let prepared = match apply_model_fast_policy(prepared).await {
+                                    Ok(prepared) => prepared,
+                                    Err(err) => {
+                                        record_rejected_ws_request(&context, &err);
+                                        send_ws_error_and_close(
+                                            &mut socket,
+                                            err,
+                                            context.prefer_raw_errors,
+                                        )
+                                        .await;
+                                        let _ = upstream.stream.close(None).await;
+                                        break;
+                                    }
+                                };
                                 let attempted_account_ids =
                                     HashSet::from([upstream.account_id.clone()]);
                                 let buffer_retry_preamble = should_buffer_ws_retry_preamble(
@@ -1244,32 +1277,14 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
             ),
         )
     })?;
-    let api_key = storage
-        .find_api_key_by_hash(&hash_platform_key(platform_key))
-        .map_err(|err| {
-            text_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                crate::gateway::error_message_for_client(
-                    prefer_raw_errors,
-                    crate::gateway::bilingual_error(
-                        "读取存储失败",
-                        format!("storage read failed: {err}"),
-                    ),
-                ),
-            )
-        })?
-        .ok_or_else(|| {
-            text_error_response(
-                StatusCode::FORBIDDEN,
-                crate::gateway::error_message_for_client(
-                    prefer_raw_errors,
-                    crate::gateway::bilingual_error(
-                        "平台 API Key 不存在",
-                        "platform api key not found",
-                    ),
-                ),
-            )
-        })?;
+    let api_key =
+        crate::gateway::load_active_gateway_api_key(&storage, platform_key, RESPONSES_ENDPOINT)
+            .map_err(|(status, message)| {
+                text_error_response(
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    crate::gateway::error_message_for_client(prefer_raw_errors, message),
+                )
+            })?;
 
     if !crate::gateway::gateway_supports_official_responses_websocket(&api_key) {
         return Err(upgrade_required_response(
@@ -1304,6 +1319,39 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
         route_conversation_source: routing.route_conversation_source,
         prefer_raw_errors,
     })
+}
+
+async fn validate_ws_api_key_for_new_request(
+    context: &WsRequestContext,
+) -> Result<(), WsSessionError> {
+    let key_id = context.api_key.id.clone();
+    tokio::task::spawn_blocking(move || {
+        let storage = open_storage().ok_or_else(|| {
+            WsSessionError::new(
+                500,
+                RESPONSES_WS_ERROR_CODE,
+                crate::gateway::bilingual_error("存储不可用", "storage unavailable"),
+            )
+        })?;
+        crate::gateway::load_active_gateway_api_key_by_id(
+            &storage,
+            key_id.as_str(),
+            RESPONSES_ENDPOINT,
+        )
+        .map(|_| ())
+        .map_err(|(status, message)| WsSessionError::new(status, RESPONSES_WS_ERROR_CODE, message))
+    })
+    .await
+    .map_err(|err| {
+        WsSessionError::new(
+            500,
+            RESPONSES_WS_ERROR_CODE,
+            crate::gateway::bilingual_error(
+                "处理 WebSocket API Key 校验任务失败",
+                format!("websocket api key validation task failed: {err}"),
+            ),
+        )
+    })?
 }
 
 async fn receive_initial_request(socket: &mut WebSocket) -> Result<Option<String>, WsSessionError> {
@@ -1353,6 +1401,108 @@ fn responses_ws_heartbeat_interval() -> tokio::time::Interval {
         tokio::time::Instant::now() + RESPONSES_WS_HEARTBEAT_INTERVAL,
         RESPONSES_WS_HEARTBEAT_INTERVAL,
     )
+}
+
+async fn rewrite_client_frame_with_model_fast_policy(
+    text: &str,
+    context: &WsRequestContext,
+) -> Result<PreparedClientFrame, WsSessionError> {
+    let prepared = rewrite_client_frame(text, context)?;
+    apply_model_fast_policy(prepared).await
+}
+
+async fn apply_model_fast_policy(
+    prepared: PreparedClientFrame,
+) -> Result<PreparedClientFrame, WsSessionError> {
+    tokio::task::spawn_blocking(move || {
+        let storage = open_storage().ok_or_else(|| {
+            WsSessionError::new(
+                500,
+                RESPONSES_WS_ERROR_CODE,
+                crate::gateway::bilingual_error("存储不可用", "storage unavailable"),
+            )
+        })?;
+        apply_model_fast_policy_with_storage(prepared, &storage)
+    })
+    .await
+    .map_err(|err| {
+        WsSessionError::new(
+            500,
+            RESPONSES_WS_ERROR_CODE,
+            crate::gateway::bilingual_error(
+                "处理 WebSocket 模型策略任务失败",
+                format!("websocket model policy task failed: {err}"),
+            ),
+        )
+    })?
+}
+
+fn apply_model_fast_policy_with_storage(
+    mut prepared: PreparedClientFrame,
+    storage: &codexmanager_core::storage::Storage,
+) -> Result<PreparedClientFrame, WsSessionError> {
+    let Some(model_slug) = prepared
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(prepared);
+    };
+    let model = storage
+        .get_enabled_model_v2(model_slug)
+        .map_err(|err| {
+            WsSessionError::new(
+                500,
+                RESPONSES_WS_ERROR_CODE,
+                format!("model_catalog_v2_read_failed: {err}"),
+            )
+        })?
+        .ok_or_else(|| {
+            WsSessionError::new(
+                404,
+                "model_not_found",
+                format!("model_not_found: {model_slug}"),
+            )
+        })?;
+    let (body, applied) = crate::models_v2::fast_policy::apply(
+        prepared.text.as_bytes().to_vec(),
+        model.fast_policy,
+        prepared.has_service_tier_field,
+    )
+    .map_err(|_| {
+        WsSessionError::new(
+            400,
+            crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED,
+            crate::gateway::bilingual_error(
+                format!("模型 {model_slug} 不允许 Fast 请求"),
+                format!("model {model_slug} does not allow Fast requests"),
+            ),
+        )
+    })?;
+    if !applied {
+        return Ok(prepared);
+    }
+
+    let value = serde_json::from_slice::<Value>(&body).map_err(|err| {
+        WsSessionError::bad_gateway_bilingual(
+            "读取模型 Fast 策略结果失败",
+            format!("parse model fast policy result failed: {err}"),
+        )
+    })?;
+    prepared.effective_service_tier = value
+        .get("service_tier")
+        .and_then(Value::as_str)
+        .and_then(crate::apikey::service_tier::normalize_service_tier_for_log)
+        .map(str::to_string);
+    prepared.service_tier_source = Some("model_policy".to_string());
+    prepared.text = String::from_utf8(body).map_err(|err| {
+        WsSessionError::bad_gateway_bilingual(
+            "序列化模型 Fast 策略结果失败",
+            format!("serialize model fast policy result failed: {err}"),
+        )
+    })?;
+    Ok(prepared)
 }
 
 fn rewrite_client_frame(
@@ -1881,7 +2031,14 @@ async fn wait_for_client_request_and_reconnect_upstream(
     let Some(text) = receive_initial_request(socket).await? else {
         return Ok(None);
     };
-    let prepared = rewrite_client_frame(text.as_str(), context)?;
+    validate_ws_api_key_for_new_request(context).await?;
+    let prepared = match rewrite_client_frame_with_model_fast_policy(text.as_str(), context).await {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            record_rejected_ws_request(context, &err);
+            return Err(err);
+        }
+    };
     let mut pending = PendingWsRequestState {
         log: begin_ws_request_log(context, &prepared, "unresolved", "upstream_reconnect"),
         prepared,
@@ -2699,6 +2856,60 @@ fn begin_ws_request_log(
             prepared.text.as_bytes(),
         ),
     }
+}
+
+fn record_rejected_ws_request(context: &WsRequestContext, err: &WsSessionError) {
+    let trace_id = crate::gateway::next_trace_id();
+    let effective_protocol_type = crate::apikey_profile::resolve_gateway_protocol_type(
+        context.api_key.protocol_type.as_str(),
+        RESPONSES_ENDPOINT,
+    );
+    crate::gateway::log_request_start(
+        trace_id.as_str(),
+        context.api_key.id.as_str(),
+        "GET",
+        RESPONSES_ENDPOINT,
+        None,
+        None,
+        None,
+        true,
+        "ws",
+        effective_protocol_type,
+    );
+    let started_at = Instant::now();
+    if let Some(storage) = open_storage() {
+        crate::gateway::write_request_log(
+            &storage,
+            crate::gateway::RequestLogTraceContext {
+                trace_id: Some(trace_id.as_str()),
+                original_path: Some(RESPONSES_ENDPOINT),
+                adapted_path: Some(RESPONSES_ENDPOINT),
+                request_type: Some("ws"),
+                route_strategy: Some("unresolved"),
+                route_source: Some("local_validation"),
+                ..Default::default()
+            },
+            Some(context.api_key.id.as_str()),
+            None,
+            RESPONSES_ENDPOINT,
+            "GET",
+            None,
+            None,
+            None,
+            Some(err.status),
+            crate::gateway::RequestLogUsage::default(),
+            Some(err.message.as_str()),
+            Some(started_at.elapsed().as_millis()),
+        );
+    }
+    crate::gateway::log_request_final(
+        trace_id.as_str(),
+        err.status,
+        None,
+        None,
+        Some(err.message.as_str()),
+        started_at.elapsed().as_millis(),
+    );
 }
 
 fn should_buffer_ws_upstream_preamble(text: &str, buffered_count: usize) -> bool {

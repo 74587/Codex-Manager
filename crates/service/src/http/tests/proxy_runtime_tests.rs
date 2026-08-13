@@ -7,7 +7,10 @@ use axum::body::{to_bytes, Body};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Request as HttpRequest, StatusCode};
 use bytes::Bytes;
-use codexmanager_core::storage::{Account, ApiKey, Storage, Token, UsageSnapshotRecord};
+use codexmanager_core::storage::{
+    Account, ApiKey, ManagedModelV2Upsert, ModelFastPolicyV2, RequestLog, RequestTokenStat,
+    Storage, Token, UsageSnapshotRecord,
+};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -1612,6 +1615,230 @@ async fn hybrid_responses_websocket_returns_426() {
     server_handle.await.expect("join front proxy");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_responses_websocket_key_returns_403() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-disabled-key");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_disabled",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        None,
+    );
+    storage
+        .update_api_key_status("gk_proxy_runtime_ws", "disabled")
+        .expect("disable websocket api key");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_disabled",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+
+    let err = connect_async(request)
+        .await
+        .expect_err("disabled websocket key should fail");
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        other => panic!("unexpected websocket error: {other}"),
+    }
+
+    let _ = shutdown_tx.send(());
+    server_handle.await.expect("join front proxy");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exhausted_responses_websocket_key_quota_returns_429() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-quota-exhausted");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_quota_exhausted",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        None,
+    );
+    storage
+        .upsert_api_key_quota_limit("gk_proxy_runtime_ws", Some(10))
+        .expect("set websocket api key quota");
+    storage
+        .insert_request_log_with_token_stat(
+            &RequestLog {
+                key_id: Some("gk_proxy_runtime_ws".to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code: Some(200),
+                created_at: chrono::Utc::now().timestamp(),
+                ..Default::default()
+            },
+            &RequestTokenStat {
+                key_id: Some("gk_proxy_runtime_ws".to_string()),
+                total_tokens: Some(10),
+                created_at: chrono::Utc::now().timestamp(),
+                ..Default::default()
+            },
+        )
+        .expect("insert exhausted websocket api key usage");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_quota_exhausted",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+
+    let err = connect_async(request)
+        .await
+        .expect_err("exhausted websocket key should fail");
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+        other => panic!("unexpected websocket error: {other}"),
+    }
+
+    let _ = shutdown_tx.send(());
+    server_handle.await.expect("join front proxy");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn responses_websocket_rechecks_quota_for_follow_up_request() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-follow-up-quota");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let (upstream_addr, mut upstream_events, _capture_rx, upstream_handle) =
+        start_mock_upstream_ws().await;
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_follow_up_quota",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some(format!(
+            "http://{upstream_addr}/chatgpt.com/backend-api/codex"
+        )),
+    );
+    storage
+        .upsert_api_key_quota_limit("gk_proxy_runtime_ws", Some(10))
+        .expect("set websocket api key quota");
+    insert_account_and_token(&storage);
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_follow_up_quota",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "first request"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send first response.create");
+    tokio::time::timeout(Duration::from_secs(5), upstream_events.recv())
+        .await
+        .expect("first upstream frame timeout")
+        .expect("first upstream frame channel");
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("first client event timeout")
+            .expect("first client event")
+            .expect("first client event result");
+        if matches!(event, Message::Text(ref text) if text.contains("\"response.completed\"")) {
+            break;
+        }
+    }
+
+    storage
+        .insert_request_log_with_token_stat(
+            &RequestLog {
+                key_id: Some("gk_proxy_runtime_ws".to_string()),
+                request_path: "/v1/responses".to_string(),
+                method: "POST".to_string(),
+                status_code: Some(200),
+                created_at: chrono::Utc::now().timestamp(),
+                ..Default::default()
+            },
+            &RequestTokenStat {
+                key_id: Some("gk_proxy_runtime_ws".to_string()),
+                total_tokens: Some(10),
+                created_at: chrono::Utc::now().timestamp(),
+                ..Default::default()
+            },
+        )
+        .expect("exhaust websocket quota after first request");
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "must be rejected"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send follow-up response.create");
+    let error = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("quota error timeout")
+        .expect("quota error event")
+        .expect("quota error result");
+    match error {
+        Message::Text(text) => {
+            let payload: serde_json::Value =
+                serde_json::from_str(&text).expect("parse quota error event");
+            assert_eq!(payload["status"], 429);
+        }
+        other => panic!("unexpected quota error event: {other:?}"),
+    }
+    let unexpected_upstream =
+        tokio::time::timeout(Duration::from_millis(200), upstream_events.recv()).await;
+    assert!(
+        !matches!(unexpected_upstream, Ok(Some(_))),
+        "quota-exhausted follow-up must not reach upstream"
+    );
+
+    let _ = client_ws.close(None).await;
+    let _ = shutdown_tx.send(());
+    server_handle.await.expect("join front proxy");
+    upstream_handle.await.expect("join mock upstream");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn official_responses_websocket_proxies_frames_and_headers() {
     let _guard = crate::test_env_guard();
@@ -1722,6 +1949,19 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         }
         other => panic!("unexpected first completed event: {other:?}"),
     }
+
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("read websocket model")
+        .expect("websocket model");
+    model.fast_policy = ModelFastPolicyV2::Filter;
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some("gpt-5.4-mini".to_string()),
+            model,
+        })
+        .expect("update websocket model fast policy");
+
     client_ws
         .send(Message::Text(
             serde_json::json!({
@@ -1755,6 +1995,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         second_payload["client_metadata"]["x-codex-turn-metadata"],
         "turn_meta_ws_1"
     );
+    assert!(second_payload.get("service_tier").is_none());
     assert!(second_payload.get("prompt_cache_key").is_none());
 
     let second_client_event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
@@ -1892,8 +2133,11 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         ws_logs
             .iter()
             .filter(|item| item.service_tier.is_none())
-            .any(|item| item.effective_service_tier.as_deref() == Some("fast")),
-        "expected follow-up websocket request to keep effective fast service tier"
+            .any(|item| {
+                item.effective_service_tier.is_none()
+                    && item.service_tier_source.as_deref() == Some("model_policy")
+            }),
+        "expected follow-up websocket request to apply the model filter policy"
     );
 
     client_ws.close(None).await.expect("close client websocket");
@@ -1906,6 +2150,95 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         .await
         .expect("mock upstream shutdown timeout")
         .expect("join mock upstream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn official_responses_websocket_block_policy_rejects_initial_frame() {
+    let _guard = crate::test_env_guard();
+    let db_path = new_test_db_path("codexmanager-proxy-runtime-ws-block-initial");
+    let storage = init_test_storage(&db_path);
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    insert_api_key_record(
+        &storage,
+        "platform_key_ws_block_initial",
+        crate::apikey_profile::ROTATION_ACCOUNT,
+        Some("http://127.0.0.1:1/chatgpt.com/backend-api/codex".to_string()),
+    );
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("read websocket block model")
+        .expect("websocket block model");
+    model.fast_policy = ModelFastPolicyV2::Block;
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some("gpt-5.4-mini".to_string()),
+            model,
+        })
+        .expect("update websocket initial block policy");
+    tokio::task::spawn_blocking(|| {
+        crate::gateway::reload_runtime_config_from_env();
+        let _ = crate::gateway::front_proxy_max_body_bytes();
+    })
+    .await
+    .expect("reload runtime config");
+
+    let state = ProxyState {
+        backend_base_url: "http://127.0.0.1:1".to_string(),
+        client: Client::new(),
+    };
+    let (front_addr, shutdown_tx, server_handle) = start_front_proxy_test_server(state).await;
+    let request = build_ws_request(
+        &format!("ws://{front_addr}/v1/responses"),
+        "platform_key_ws_block_initial",
+        &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
+    );
+    let (mut client_ws, response) = connect_async(request).await.expect("websocket connects");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-5.4-mini",
+                "input": "blocked initial request",
+                "service_tier": "fast"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send blocked initial frame");
+    let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("blocked initial event timeout")
+        .expect("blocked initial event")
+        .expect("blocked initial event result");
+    let Message::Text(text) = event else {
+        panic!("expected blocked initial websocket error text frame");
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(text.as_ref()).expect("parse blocked initial event");
+    assert_eq!(payload["type"], "error");
+    assert_eq!(payload["status"], 400);
+    assert_eq!(payload["error"]["code"], "fast_request_blocked");
+
+    let request_logs = storage
+        .list_request_logs(None, 10)
+        .expect("list blocked initial request logs");
+    let blocked_logs = request_logs
+        .iter()
+        .filter(|item| item.request_type.as_deref() == Some("ws"))
+        .collect::<Vec<_>>();
+    assert_eq!(blocked_logs.len(), 1);
+    assert_eq!(blocked_logs[0].status_code, Some(400));
+    assert!(blocked_logs[0]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("does not allow Fast requests")));
+
+    let _ = client_ws.close(None).await;
+    let _ = shutdown_tx.send(());
+    server_handle.await.expect("join front proxy");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
