@@ -32,7 +32,8 @@ use crate::storage_helpers::open_storage;
 mod responses_websocket_rebase;
 
 use responses_websocket_rebase::{
-    rebase_response_create_for_account_change, rebase_response_create_for_missing_tool_call,
+    expand_response_create_previous_response, rebase_response_create_for_account_change,
+    rebase_response_create_for_missing_tool_call, CompletedWsResponseCache,
     CompletedWsToolCallCache, WsToolCallKind,
 };
 
@@ -56,6 +57,9 @@ struct WsRequestContext {
     api_key: codexmanager_core::storage::ApiKey,
     incoming_headers: crate::gateway::IncomingHeaderSnapshot,
     prompt_cache_key: Option<String>,
+    route_conversation_id: Option<String>,
+    route_conversation_source:
+        Option<crate::gateway::conversation_binding::RouteConversationSource>,
     effective_upstream_base: String,
     prefer_raw_errors: bool,
 }
@@ -63,6 +67,7 @@ struct WsRequestContext {
 #[derive(Clone)]
 struct PreparedClientFrame {
     text: String,
+    input: Value,
     client_model: Option<String>,
     model: Option<String>,
     previous_response_id: Option<String>,
@@ -81,6 +86,7 @@ struct PreparedClientFrame {
 struct PendingWsRequestState {
     log: PendingWsRequestLog,
     prepared: PreparedClientFrame,
+    conversation_routing: Option<crate::gateway::conversation_binding::ConversationRoutingContext>,
     forwarded_upstream_event: bool,
     forwarded_non_preamble_event: bool,
     replayed_after_upstream_disconnect: bool,
@@ -97,6 +103,8 @@ type UpstreamWebsocketStream =
 struct ConnectedUpstreamWebsocket {
     stream: UpstreamWebsocketStream,
     account_id: String,
+    account: codexmanager_core::storage::Account,
+    conversation_routing: Option<crate::gateway::conversation_binding::ConversationRoutingContext>,
     candidate_account_ids: HashSet<String>,
     upstream_url: String,
     route_strategy: &'static str,
@@ -340,31 +348,35 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
         "unresolved",
         "initial_upstream_connect",
     );
-    let mut upstream =
-        match connect_upstream_websocket_with_timeout(&context, prepared_first.model.as_deref())
-            .await
-        {
-            Ok(stream) => stream,
-            Err(err) => {
-                finalize_ws_request_log(
-                    &context,
-                    &first_log,
-                    None,
-                    None,
-                    err.status,
-                    crate::gateway::RequestLogUsage::default(),
-                    Some(err.message.clone()),
-                );
-                send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
-                return;
-            }
-        };
+    let mut upstream = match connect_upstream_websocket_with_timeout(
+        &context,
+        prepared_first.model.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(err) => {
+            finalize_ws_request_log(
+                &context,
+                &first_log,
+                None,
+                None,
+                err.status,
+                crate::gateway::RequestLogUsage::default(),
+                Some(err.message.clone()),
+            );
+            send_ws_error_and_close(&mut socket, err, context.prefer_raw_errors).await;
+            return;
+        }
+    };
     first_log.route_strategy = Some(upstream.route_strategy.to_string());
     first_log.route_source = Some(upstream.route_source.to_string());
     let first_attempted_account_ids = HashSet::from([upstream.account_id.clone()]);
     let mut first_pending = PendingWsRequestState {
         log: first_log,
         prepared: prepared_first.clone(),
+        conversation_routing: upstream.conversation_routing.clone(),
         forwarded_upstream_event: false,
         forwarded_non_preamble_event: false,
         replayed_after_upstream_disconnect: false,
@@ -381,6 +393,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
     };
 
     let mut completed_tool_calls = CompletedWsToolCallCache::default();
+    let mut completed_responses = CompletedWsResponseCache::default();
     if let Err(err) = upstream
         .stream
         .send(UpstreamMessage::Text(
@@ -399,6 +412,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
             &context,
             &mut first_pending,
             Some(previous_account_id.as_str()),
+            &completed_responses,
             &completed_tool_calls,
         )
         .await
@@ -455,6 +469,50 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         "event=responses_ws_upstream_heartbeat_failed account_id={} err={err}",
                         upstream.account_id,
                     );
+                }
+                if pending_request.is_none() {
+                    match ws_account_requires_reselection(&context, &upstream, None) {
+                        Ok(true) => {
+                            log::info!(
+                                "event=responses_ws_idle_account_invalidated account_id={} reason=account_eligibility_changed",
+                                upstream.account_id,
+                            );
+                            let _ = upstream.stream.close(None).await;
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            log::warn!(
+                                "event=responses_ws_idle_account_check_failed account_id={} err={}",
+                                upstream.account_id,
+                                err.message,
+                            );
+                        }
+                    }
+                } else {
+                    match ws_account_is_unavailable(
+                        &context,
+                        &upstream,
+                        pending_request
+                            .as_ref()
+                            .and_then(|pending| pending.prepared.model.as_deref()),
+                    ) {
+                        Ok(true) => {
+                            log::info!(
+                                "event=responses_ws_inflight_account_invalidated account_id={} reason=account_no_longer_selectable",
+                                upstream.account_id,
+                            );
+                            let _ = upstream.stream.close(None).await;
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            log::warn!(
+                                "event=responses_ws_inflight_account_check_failed account_id={} err={}",
+                                upstream.account_id,
+                                err.message,
+                            );
+                            let _ = upstream.stream.close(None).await;
+                        }
+                    }
                 }
             }
             maybe_client = socket.recv() => {
@@ -528,6 +586,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         upstream.route_source,
                                     ),
                                     prepared,
+                                    conversation_routing: upstream.conversation_routing.clone(),
                                     forwarded_upstream_event: false,
                                     forwarded_non_preamble_event: false,
                                     replayed_after_upstream_disconnect: false,
@@ -537,9 +596,97 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                     attempted_account_ids,
                                     retried_missing_tool_call_context: false,
                                 };
-                                if let Err(send_err) = upstream.stream.send(UpstreamMessage::Text(
-                                    current_pending.prepared.text.clone().into(),
-                                )).await {
+                                let (must_reselect_account, fresh_conversation_routing, fresh_route_strategy, fresh_route_source) = match ws_collect_routed_candidates(
+                                    &context,
+                                    current_pending.prepared.model.as_deref(),
+                                ) {
+                                    Ok(routed) => (
+                                        crate::gateway::gateway_ws_account_requires_switch(
+                                            &routed,
+                                            upstream.account_id.as_str(),
+                                        ),
+                                        routed.conversation_routing,
+                                        routed.route_strategy,
+                                        routed.route_source,
+                                    ),
+                                    Err(err) => {
+                                        finalize_ws_request_log(
+                                            &context,
+                                            &current_pending.log,
+                                            Some(upstream.account_id.as_str()),
+                                            Some(upstream.upstream_url.as_str()),
+                                            err.status,
+                                            crate::gateway::RequestLogUsage::default(),
+                                            Some(err.message.clone()),
+                                        );
+                                        send_ws_error_and_close(
+                                            &mut socket,
+                                            err,
+                                            context.prefer_raw_errors,
+                                        )
+                                        .await;
+                                        break;
+                                    }
+                                };
+                                if !must_reselect_account {
+                                    upstream.conversation_routing =
+                                        fresh_conversation_routing.clone();
+                                    upstream.route_strategy = fresh_route_strategy;
+                                    upstream.route_source = fresh_route_source;
+                                    current_pending.conversation_routing =
+                                        fresh_conversation_routing;
+                                    current_pending.log.route_strategy =
+                                        Some(fresh_route_strategy.to_string());
+                                    current_pending.log.route_source =
+                                        Some(fresh_route_source.to_string());
+                                }
+                                if must_reselect_account {
+                                    let previous_account_id = upstream.account_id.clone();
+                                    log::info!(
+                                        "event=responses_ws_account_reselect_before_turn account_id={} model={} reason=account_eligibility_changed",
+                                        previous_account_id,
+                                        current_pending.prepared.model.as_deref().unwrap_or("-"),
+                                    );
+                                    let _ = upstream.stream.close(None).await;
+                                    match reconnect_upstream_for_pending_request(
+                                        &context,
+                                        &mut current_pending,
+                                        Some(previous_account_id.as_str()),
+                                        &completed_responses,
+                                        &completed_tool_calls,
+                                    )
+                                    .await
+                                    {
+                                        Ok(replacement) => {
+                                            log::info!(
+                                                "event=responses_ws_account_reselected_before_turn_complete previous_account_id={} account_id={}",
+                                                previous_account_id,
+                                                replacement.account_id,
+                                            );
+                                            upstream = replacement;
+                                        }
+                                        Err(err) => {
+                                            finalize_ws_request_log(
+                                                &context,
+                                                &current_pending.log,
+                                                None,
+                                                None,
+                                                err.status,
+                                                crate::gateway::RequestLogUsage::default(),
+                                                Some(err.message.clone()),
+                                            );
+                                            send_ws_error_and_close(
+                                                &mut socket,
+                                                err,
+                                                context.prefer_raw_errors,
+                                            )
+                                            .await;
+                                            break;
+                                        }
+                                    }
+                                } else if let Err(send_err) = upstream.stream.send(
+                                    UpstreamMessage::Text(current_pending.prepared.text.clone().into()),
+                                ).await {
                                     let previous_account_id = upstream.account_id.clone();
                                     log::warn!(
                                         "event=responses_ws_upstream_stale_send account_id={} err={send_err}",
@@ -550,6 +697,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &context,
                                         &mut current_pending,
                                         Some(previous_account_id.as_str()),
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -636,6 +784,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             pending_request
                                 .as_mut()
                                 .expect("pending request checked above"),
+                            &completed_responses,
                             &completed_tool_calls,
                             "early_eof",
                         )
@@ -693,6 +842,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                         &mut socket,
                         &context,
                         previous_account_id.as_str(),
+                        &completed_responses,
                         &completed_tool_calls,
                     )
                     .await
@@ -726,6 +876,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &context,
                                         &mut upstream,
                                         pending,
+                                        &completed_responses,
                                         &completed_tool_calls,
                                         "connection_limit_reached",
                                     )
@@ -769,6 +920,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &mut socket,
                                         &context,
                                         previous_account_id.as_str(),
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -807,6 +959,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                         &mut upstream,
                                         pending,
                                         &terminal,
+                                        &completed_responses,
                                         &completed_tool_calls,
                                     )
                                     .await
@@ -844,11 +997,34 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             }
 
                             if let Some(mut pending) = pending_request.take() {
+                                if terminal.status_code == 200 {
+                                    cache_completed_ws_response(
+                                        &mut completed_responses,
+                                        &pending.prepared,
+                                        text.as_str(),
+                                    );
+                                }
                                 if let Err(err) = flush_ws_upstream_preamble(&mut socket, &mut pending).await {
                                     log::warn!("event=responses_ws_client_send_preamble_failed err={err}");
                                     break;
                                 }
                                 mark_ws_first_response(&mut pending);
+                                if let Some(storage) = open_storage() {
+                                    if let Err(err) = crate::gateway::conversation_binding::record_conversation_binding_terminal_response(
+                                        &storage,
+                                        pending.conversation_routing.as_ref(),
+                                        &upstream.account,
+                                        pending.prepared.model.as_deref(),
+                                        terminal.status_code,
+                                    ) {
+                                        log::warn!(
+                                            "event=responses_ws_conversation_binding_record_failed account_id={} status={} err={}",
+                                            upstream.account_id,
+                                            terminal.status_code,
+                                            err,
+                                        );
+                                    }
+                                }
                                 finalize_ws_request_log(
                                     &context,
                                     &pending.log,
@@ -929,6 +1105,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 pending_request
                                     .as_mut()
                                     .expect("pending request checked above"),
+                                &completed_responses,
                                 &completed_tool_calls,
                                 "early_close",
                             )
@@ -986,6 +1163,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             &mut socket,
                             &context,
                             previous_account_id.as_str(),
+                            &completed_responses,
                             &completed_tool_calls,
                         )
                         .await
@@ -1016,6 +1194,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 pending_request
                                     .as_mut()
                                     .expect("pending request checked above"),
+                                &completed_responses,
                                 &completed_tool_calls,
                                 "early_read_error",
                             )
@@ -1073,6 +1252,7 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                             &mut socket,
                             &context,
                             previous_account_id.as_str(),
+                            &completed_responses,
                             &completed_tool_calls,
                         )
                         .await
@@ -1143,7 +1323,7 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
         ));
     }
 
-    let (incoming_headers, prompt_cache_key) =
+    let routing =
         crate::gateway::gateway_resolve_ws_prompt_cache_key(&storage, &api_key, &incoming_headers)
             .map_err(|err| {
                 text_error_response(
@@ -1158,8 +1338,10 @@ fn authorize_websocket_request(headers: &HeaderMap) -> Result<WsRequestContext, 
     Ok(WsRequestContext {
         effective_upstream_base: crate::gateway::gateway_resolve_effective_upstream_base(&api_key),
         api_key,
-        incoming_headers,
-        prompt_cache_key,
+        incoming_headers: routing.incoming_headers,
+        prompt_cache_key: routing.prompt_cache_key,
+        route_conversation_id: routing.route_conversation_id,
+        route_conversation_source: routing.route_conversation_source,
         prefer_raw_errors,
     })
 }
@@ -1491,6 +1673,7 @@ fn rewrite_client_frame(
 
     Ok(PreparedClientFrame {
         text,
+        input: request.input,
         client_model: client_model_for_log,
         model: Some(request.model),
         previous_response_id: request.previous_response_id,
@@ -1626,17 +1809,66 @@ fn merge_client_metadata(
         .and_then(|value| serde_json::to_value(value).ok())
 }
 
+fn ws_collect_routed_candidates(
+    context: &WsRequestContext,
+    model: Option<&str>,
+) -> Result<crate::gateway::GatewayRoutedCandidates, WsSessionError> {
+    let storage = open_storage().ok_or_else(|| {
+        WsSessionError::service_unavailable_bilingual("存储不可用", "storage unavailable")
+    })?;
+    crate::gateway::gateway_collect_routed_candidates_for_ws(
+        &storage,
+        &context.api_key.id,
+        model,
+        context.route_conversation_id.as_deref(),
+        context.route_conversation_source,
+    )
+    .map_err(|err| {
+        WsSessionError::service_unavailable_bilingual(
+            "读取 WebSocket 账号候选失败",
+            format!("read websocket account candidates failed: {err}"),
+        )
+    })
+}
+
+fn ws_account_requires_reselection(
+    context: &WsRequestContext,
+    upstream: &ConnectedUpstreamWebsocket,
+    model: Option<&str>,
+) -> Result<bool, WsSessionError> {
+    let routed = ws_collect_routed_candidates(context, model)?;
+    Ok(crate::gateway::gateway_ws_account_requires_switch(
+        &routed,
+        upstream.account_id.as_str(),
+    ))
+}
+
+fn ws_account_is_unavailable(
+    context: &WsRequestContext,
+    upstream: &ConnectedUpstreamWebsocket,
+    model: Option<&str>,
+) -> Result<bool, WsSessionError> {
+    let routed = ws_collect_routed_candidates(context, model)?;
+    Ok(!routed
+        .candidates
+        .iter()
+        .any(|(account, _)| account.id == upstream.account_id))
+}
+
 async fn connect_upstream_websocket(
     context: &WsRequestContext,
     model: Option<&str>,
+    previous_account_id: Option<&str>,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let storage = open_storage().ok_or_else(|| {
         WsSessionError::service_unavailable_bilingual("存储不可用", "storage unavailable")
     })?;
-    let routed = crate::gateway::gateway_collect_routed_candidates_with_log_source(
+    let routed = crate::gateway::gateway_collect_routed_candidates_for_ws(
         &storage,
         &context.api_key.id,
         model,
+        context.route_conversation_id.as_deref(),
+        context.route_conversation_source,
     )?;
     if routed.candidates.is_empty() {
         return Err(WsSessionError::service_unavailable_bilingual(
@@ -1649,18 +1881,27 @@ async fn connect_upstream_websocket(
         .iter()
         .map(|(account, _)| account.id.clone())
         .collect::<HashSet<_>>();
+    let conversation_routing = routed.conversation_routing.clone();
     drop(storage);
 
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
     let mut last_error = None;
     for (account, token) in routed.candidates {
-        match connect_account_upstream_websocket(context, &account, token, ws_url.as_str(), false)
-            .await
+        match connect_account_upstream_websocket(
+            context,
+            &account,
+            token,
+            ws_url.as_str(),
+            previous_account_id.is_some_and(|account_id| account_id != account.id),
+        )
+        .await
         {
             Ok(stream) => {
                 return Ok(ConnectedUpstreamWebsocket {
                     stream,
-                    account_id: account.id,
+                    account_id: account.id.clone(),
+                    account,
+                    conversation_routing,
                     candidate_account_ids,
                     upstream_url: ws_url.clone(),
                     route_strategy: routed.route_strategy,
@@ -1685,10 +1926,16 @@ async fn connect_upstream_websocket(
 async fn connect_upstream_websocket_with_timeout(
     context: &WsRequestContext,
     model: Option<&str>,
+    previous_account_id: Option<&str>,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let connect_timeout =
         crate::gateway::current_upstream_connect_timeout().max(std::time::Duration::from_secs(1));
-    match tokio::time::timeout(connect_timeout, connect_upstream_websocket(context, model)).await {
+    match tokio::time::timeout(
+        connect_timeout,
+        connect_upstream_websocket(context, model, previous_account_id),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(WsSessionError::new(
             504,
@@ -1708,26 +1955,25 @@ async fn reconnect_upstream_for_pending_request(
     context: &WsRequestContext,
     pending: &mut PendingWsRequestState,
     previous_account_id: Option<&str>,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
-    if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
-        return Err(WsSessionError::context_rebase_failed(
-            "无法在新 WebSocket 连接中恢复 store=false 的 previous_response_id；请重新发送完整上下文",
-        ));
-    }
-    let mut replacement =
-        connect_upstream_websocket_with_timeout(context, pending.prepared.model.as_deref()).await?;
-    if previous_account_id.is_some_and(|account_id| account_id != replacement.account_id) {
-        match rebase_ws_request_for_account_change(
-            pending.prepared.text.as_str(),
-            completed_tool_calls,
-        ) {
-            Ok(rebased) => pending.prepared.text = rebased,
-            Err(err) => {
-                let _ = replacement.stream.close(None).await;
-                return Err(err);
-            }
-        }
+    let mut replacement = connect_upstream_websocket_with_timeout(
+        context,
+        pending.prepared.model.as_deref(),
+        previous_account_id,
+    )
+    .await?;
+    let account_changed =
+        previous_account_id.is_some_and(|account_id| account_id != replacement.account_id);
+    if let Err(err) = prepare_ws_request_for_new_connection(
+        pending,
+        completed_responses,
+        completed_tool_calls,
+        account_changed,
+    ) {
+        let _ = replacement.stream.close(None).await;
+        return Err(err);
     }
 
     pending.attempted_account_ids.clear();
@@ -1736,6 +1982,7 @@ async fn reconnect_upstream_for_pending_request(
         .insert(replacement.account_id.clone());
     pending.log.route_strategy = Some(replacement.route_strategy.to_string());
     pending.log.route_source = Some(replacement.route_source.to_string());
+    pending.conversation_routing = replacement.conversation_routing.clone();
     pending.buffer_retry_preamble = should_buffer_ws_retry_preamble(
         &replacement,
         &pending.attempted_account_ids,
@@ -1763,22 +2010,12 @@ async fn retry_pending_request_after_upstream_disconnect(
     context: &WsRequestContext,
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
     reason: &str,
 ) -> Result<bool, WsSessionError> {
     if pending.forwarded_non_preamble_event || pending.replayed_after_upstream_disconnect {
         return Ok(false);
-    }
-
-    // A continuation sent with store=false depends on the old upstream
-    // connection's in-memory previous-response cache. A replacement upstream
-    // connection cannot safely replay only that incremental input. Let the
-    // client establish a new connection and provide the full context instead
-    // of silently creating a partial or duplicated continuation.
-    if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
-        return Err(WsSessionError::context_rebase_failed(
-            "无法安全恢复 store=false 的增量 WebSocket 请求；请在新连接中重新发送完整上下文",
-        ));
     }
 
     // Once a continuation has emitted a preamble, replaying the same request
@@ -1800,6 +2037,7 @@ async fn retry_pending_request_after_upstream_disconnect(
         context,
         pending,
         Some(previous_account_id.as_str()),
+        completed_responses,
         completed_tool_calls,
     )
     .await?;
@@ -1817,6 +2055,7 @@ async fn wait_for_client_request_and_reconnect_upstream(
     socket: &mut WebSocket,
     context: &WsRequestContext,
     previous_account_id: &str,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<Option<(ConnectedUpstreamWebsocket, PendingWsRequestState)>, WsSessionError> {
     let Some(text) = receive_initial_request(socket).await? else {
@@ -1833,6 +2072,7 @@ async fn wait_for_client_request_and_reconnect_upstream(
     let mut pending = PendingWsRequestState {
         log: begin_ws_request_log(context, &prepared, "unresolved", "upstream_reconnect"),
         prepared,
+        conversation_routing: None,
         forwarded_upstream_event: false,
         forwarded_non_preamble_event: false,
         replayed_after_upstream_disconnect: false,
@@ -1846,6 +2086,7 @@ async fn wait_for_client_request_and_reconnect_upstream(
         context,
         &mut pending,
         Some(previous_account_id),
+        completed_responses,
         completed_tool_calls,
     )
     .await
@@ -2858,9 +3099,70 @@ fn finalize_ws_request_log(
 fn ws_context_rebase_error(raw_message: impl Into<String>) -> WsSessionError {
     let raw_message = raw_message.into();
     WsSessionError::context_rebase_failed(crate::gateway::bilingual_error(
-        "切换账号时无法重建工具调用上下文",
+        "无法为新的上游 WebSocket 重建完整上下文",
         raw_message,
     ))
+}
+
+fn prepare_ws_request_for_new_connection(
+    pending: &mut PendingWsRequestState,
+    completed_responses: &CompletedWsResponseCache,
+    completed_tool_calls: &CompletedWsToolCallCache,
+    account_changed: bool,
+) -> Result<(), WsSessionError> {
+    if pending.prepared.previous_response_id.is_some()
+        && (!pending.prepared.store || account_changed)
+    {
+        let expanded = expand_response_create_previous_response(
+            pending.prepared.text.as_str(),
+            completed_responses,
+        )
+        .map_err(ws_context_rebase_error)?
+        .ok_or_else(|| {
+            ws_context_rebase_error(
+                "response.create declared previous_response_id but no recoverable id was found",
+            )
+        })?;
+        pending.prepared.text = expanded;
+        pending.prepared.previous_response_id = None;
+        pending.prepared.input = ws_request_input_from_text(pending.prepared.text.as_str())?;
+    }
+    if account_changed {
+        pending.prepared.text = rebase_ws_request_for_account_change(
+            pending.prepared.text.as_str(),
+            completed_tool_calls,
+        )?;
+        pending.prepared.input = ws_request_input_from_text(pending.prepared.text.as_str())?;
+    }
+    Ok(())
+}
+
+fn ws_request_input_from_text(text: &str) -> Result<Value, WsSessionError> {
+    serde_json::from_str::<Value>(text)
+        .map_err(|err| {
+            ws_context_rebase_error(format!("parse recovered response.create failed: {err}"))
+        })?
+        .get("input")
+        .cloned()
+        .ok_or_else(|| ws_context_rebase_error("recovered response.create is missing input"))
+}
+
+fn cache_completed_ws_response(
+    completed_responses: &mut CompletedWsResponseCache,
+    prepared: &PreparedClientFrame,
+    terminal_text: &str,
+) {
+    if let Err(err) = completed_responses.observe_completed_response(
+        terminal_text,
+        prepared.previous_response_id.as_deref(),
+        &prepared.input,
+    ) {
+        log::warn!(
+            "event=responses_ws_response_history_not_cached previous_response_id={} err={}",
+            prepared.previous_response_id.as_deref().unwrap_or("-"),
+            err,
+        );
+    }
 }
 
 fn rebase_ws_request_for_account_change(
@@ -2940,6 +3242,7 @@ async fn try_retry_ws_request_after_terminal(
     upstream: &mut ConnectedUpstreamWebsocket,
     pending: &mut PendingWsRequestState,
     terminal: &WsTerminalEvent,
+    completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<bool, WsSessionError> {
     if terminal.status_code == 200 || pending.forwarded_upstream_event {
@@ -2961,15 +3264,20 @@ async fn try_retry_ws_request_after_terminal(
         if strip_previous_response_id_from_ws_text(pending.prepared.text.as_str()).is_none() {
             return Ok(false);
         }
-        if pending.prepared.previous_response_id.is_some() && !pending.prepared.store {
-            return Err(WsSessionError::context_rebase_failed(
-                "previous_response_id 在新 WebSocket 连接中不可用；store=false 时必须重新发送完整上下文",
-            ));
-        }
-        retry_text = Some(rebase_ws_request_for_account_change(
+        let expanded = expand_response_create_previous_response(
             pending.prepared.text.as_str(),
-            completed_tool_calls,
-        )?);
+            completed_responses,
+        )
+        .map_err(ws_context_rebase_error)?
+        .ok_or_else(|| {
+            ws_context_rebase_error(
+                "previous_response_id was rejected and no recoverable response id was found",
+            )
+        })?;
+        pending.prepared.text = expanded;
+        pending.prepared.previous_response_id = None;
+        pending.prepared.input = ws_request_input_from_text(pending.prepared.text.as_str())?;
+        retry_text = Some(pending.prepared.text.clone());
     } else {
         let previous_account_id = upstream.account_id.clone();
         if !try_rotate_ws_upstream_after_terminal(
@@ -2984,15 +3292,20 @@ async fn try_retry_ws_request_after_terminal(
             return Ok(false);
         }
         if upstream.account_id != previous_account_id {
-            retry_text = Some(rebase_ws_request_for_account_change(
-                pending.prepared.text.as_str(),
+            prepare_ws_request_for_new_connection(
+                pending,
+                completed_responses,
                 completed_tool_calls,
-            )?);
+                true,
+            )?;
+            retry_text = Some(pending.prepared.text.clone());
             pending.log.route_strategy = Some(upstream.route_strategy.to_string());
             pending.log.route_source = Some(upstream.route_source.to_string());
+            pending.conversation_routing = upstream.conversation_routing.clone();
         }
     }
     let retry_text = retry_text.unwrap_or_else(|| pending.prepared.text.clone());
+    let retry_input = ws_request_input_from_text(retry_text.as_str())?;
     match upstream
         .stream
         .send(UpstreamMessage::Text(retry_text.clone().into()))
@@ -3000,6 +3313,7 @@ async fn try_retry_ws_request_after_terminal(
     {
         Ok(()) => {
             pending.prepared.text = retry_text;
+            pending.prepared.input = retry_input;
             pending.forwarded_upstream_event = false;
             pending.buffered_upstream_preamble.clear();
             pending.buffer_retry_preamble = should_buffer_ws_retry_preamble(
@@ -3042,10 +3356,12 @@ async fn try_rotate_ws_upstream_after_terminal(
         Some(storage) => storage,
         None => return false,
     };
-    let routed = match crate::gateway::gateway_collect_routed_candidates_with_log_source(
+    let routed = match crate::gateway::gateway_collect_routed_candidates_for_ws(
         &storage,
         &context.api_key.id,
         model,
+        context.route_conversation_id.as_deref(),
+        context.route_conversation_source,
     ) {
         Ok(routed) => routed,
         Err(err) => {
@@ -3061,6 +3377,7 @@ async fn try_rotate_ws_upstream_after_terminal(
     let route_strategy = routed.route_strategy;
     let route_source = routed.route_source;
     let candidates = routed.candidates;
+    let conversation_routing = routed.conversation_routing.clone();
     let candidate_account_ids = candidates
         .iter()
         .map(|(account, _)| account.id.clone())
@@ -3083,7 +3400,9 @@ async fn try_rotate_ws_upstream_after_terminal(
             Ok(stream) => {
                 let replacement = ConnectedUpstreamWebsocket {
                     stream,
-                    account_id: account.id,
+                    account_id: account.id.clone(),
+                    account,
+                    conversation_routing,
                     candidate_account_ids,
                     upstream_url: upstream.upstream_url.clone(),
                     route_strategy,

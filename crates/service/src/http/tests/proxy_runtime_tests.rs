@@ -1296,7 +1296,17 @@ async fn start_mock_upstream_ws_closes_after_accepting_follow_up() -> (
             }),
             serde_json::json!({
                 "type": "response.completed",
-                "response": { "id": "resp_ws_stale_follow_up_0" }
+                "response": {
+                    "id": "resp_ws_stale_follow_up_0",
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "historical seed answer"
+                        }]
+                    }]
+                }
             }),
         ] {
             websocket
@@ -1341,7 +1351,7 @@ async fn start_mock_upstream_ws_closes_after_accepting_follow_up() -> (
             }),
             serde_json::json!({
                 "type": "response.completed",
-                "response": { "id": "resp_ws_stale_follow_up_1" }
+                "response": { "id": "resp_ws_stale_follow_up_1", "output": [] }
             }),
         ] {
             replacement
@@ -3390,6 +3400,8 @@ async fn official_responses_websocket_replays_follow_up_accepted_by_closing_upst
             serde_json::json!({
                 "type": "response.create",
                 "model": "gpt-4.1",
+                "store": false,
+                "previous_response_id": "resp_ws_stale_follow_up_0",
                 "input": "historical resume follow-up"
             })
             .to_string()
@@ -3405,6 +3417,23 @@ async fn official_responses_websocket_replays_follow_up_accepted_by_closing_upst
             .expect("historical follow-up replay channel");
         assert_eq!(phase, expected_phase);
         assert!(text.contains("historical resume follow-up"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&text).expect("parse historical follow-up frame");
+        if expected_phase == 1 {
+            assert_eq!(payload["previous_response_id"], "resp_ws_stale_follow_up_0");
+        } else {
+            assert!(payload.get("previous_response_id").is_none());
+            let input = payload["input"]
+                .as_array()
+                .expect("replacement request carries full context");
+            assert_eq!(input.len(), 3);
+            assert_eq!(input[0]["content"][0]["text"], "historical resume seed");
+            assert_eq!(input[1]["content"][0]["text"], "historical seed answer");
+            assert_eq!(
+                input[2]["content"][0]["text"],
+                "historical resume follow-up"
+            );
+        }
     }
 
     let mut follow_up_completed = false;
@@ -3719,11 +3748,14 @@ async fn official_responses_websocket_rebases_tool_output_on_next_account() {
     let rebased_input = rebased_payload["input"]
         .as_array()
         .expect("rebased tool input array");
-    assert_eq!(rebased_input.len(), 2);
-    assert_eq!(rebased_input[0]["type"], "custom_tool_call");
-    assert_eq!(rebased_input[0]["call_id"], "call_ws_tool_rebase");
-    assert_eq!(rebased_input[1]["type"], "custom_tool_call_output");
+    assert_eq!(rebased_input.len(), 3);
+    assert_eq!(rebased_input[0]["type"], "message");
+    assert_eq!(rebased_input[0]["role"], "user");
+    assert_eq!(rebased_input[0]["content"][0]["text"], "make a patch");
+    assert_eq!(rebased_input[1]["type"], "custom_tool_call");
     assert_eq!(rebased_input[1]["call_id"], "call_ws_tool_rebase");
+    assert_eq!(rebased_input[2]["type"], "custom_tool_call_output");
+    assert_eq!(rebased_input[2]["call_id"], "call_ws_tool_rebase");
     assert!(rebased_input
         .iter()
         .all(|item| item.get("encrypted_content").is_none()));
