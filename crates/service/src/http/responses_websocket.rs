@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::extensions::compression::deflate::DeflateConfig;
+use tokio_tungstenite::tungstenite::extensions::ExtensionsConfig;
 use tokio_tungstenite::tungstenite::handshake::client::{
     Request as WsClientRequest, Response as WsClientResponse,
 };
@@ -179,6 +181,19 @@ impl WsConnectError {
         let body = String::from_utf8_lossy(&self.response_body).to_ascii_lowercase();
         body.contains(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
             || body.contains(&WEBSOCKET_CONNECTION_LIMIT_REACHED_MESSAGE.to_ascii_lowercase())
+    }
+
+    fn is_compression_negotiation_rejection(&self) -> bool {
+        let message = self.message.to_ascii_lowercase();
+        let body = String::from_utf8_lossy(&self.response_body).to_ascii_lowercase();
+        let extension_signal = message.contains("sec-websocket-extensions")
+            || message.contains("permessage-deflate")
+            || body.contains("sec-websocket-extensions")
+            || body.contains("permessage-deflate")
+            || body.contains("unsupported extension")
+            || body.contains("compression extension");
+        let rejected_handshake = matches!(self.status_code, Some(400 | 426));
+        extension_signal && (rejected_handshake || self.status_code.is_none())
     }
 }
 
@@ -1861,10 +1876,11 @@ fn ws_account_is_unavailable(
         .any(|(account, _)| account.id == upstream.account_id))
 }
 
-async fn connect_upstream_websocket(
+async fn connect_upstream_websocket_excluding_accounts(
     context: &WsRequestContext,
     model: Option<&str>,
     previous_account_id: Option<&str>,
+    excluded_account_ids: &HashSet<String>,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let storage = open_storage().ok_or_else(|| {
         WsSessionError::service_unavailable_bilingual("存储不可用", "storage unavailable")
@@ -1888,11 +1904,22 @@ async fn connect_upstream_websocket(
         .map(|(account, _)| account.id.clone())
         .collect::<HashSet<_>>();
     let conversation_routing = routed.conversation_routing.clone();
+    let has_unexcluded_candidate = routed
+        .candidates
+        .iter()
+        .any(|(account, _)| !excluded_account_ids.contains(account.id.as_str()));
+    let candidates = routed
+        .candidates
+        .into_iter()
+        .filter(|(account, _)| {
+            !has_unexcluded_candidate || !excluded_account_ids.contains(account.id.as_str())
+        })
+        .collect::<Vec<_>>();
     drop(storage);
 
     let ws_url = build_upstream_websocket_url(&context.effective_upstream_base)?;
     let mut last_error = None;
-    for (account, token) in routed.candidates {
+    for (account, token) in candidates {
         match connect_account_upstream_websocket(
             context,
             &account,
@@ -1934,11 +1961,31 @@ async fn connect_upstream_websocket_with_timeout(
     model: Option<&str>,
     previous_account_id: Option<&str>,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
+    connect_upstream_websocket_with_timeout_excluding_accounts(
+        context,
+        model,
+        previous_account_id,
+        &HashSet::new(),
+    )
+    .await
+}
+
+async fn connect_upstream_websocket_with_timeout_excluding_accounts(
+    context: &WsRequestContext,
+    model: Option<&str>,
+    previous_account_id: Option<&str>,
+    excluded_account_ids: &HashSet<String>,
+) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let connect_timeout =
         crate::gateway::current_upstream_connect_timeout().max(std::time::Duration::from_secs(1));
     match tokio::time::timeout(
         connect_timeout,
-        connect_upstream_websocket(context, model, previous_account_id),
+        connect_upstream_websocket_excluding_accounts(
+            context,
+            model,
+            previous_account_id,
+            excluded_account_ids,
+        ),
     )
     .await
     {
@@ -1965,13 +2012,18 @@ async fn reconnect_upstream_for_pending_request(
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<ConnectedUpstreamWebsocket, WsSessionError> {
     let mut previous_account_id = previous_account_id.map(str::to_owned);
+    let mut excluded_account_ids = HashSet::new();
+    if let Some(account_id) = previous_account_id.as_deref() {
+        excluded_account_ids.insert(account_id.to_string());
+    }
     let mut last_send_error = None;
 
     for attempt in 1..=RESPONSES_WS_MAX_PENDING_FRAME_SEND_ATTEMPTS {
-        let mut replacement = connect_upstream_websocket_with_timeout(
+        let mut replacement = connect_upstream_websocket_with_timeout_excluding_accounts(
             context,
             pending.prepared.model.as_deref(),
             previous_account_id.as_deref(),
+            &excluded_account_ids,
         )
         .await?;
         let account_changed = previous_account_id
@@ -2027,6 +2079,7 @@ async fn reconnect_upstream_for_pending_request(
                 last_send_error = Some(format!(
                     "send upstream websocket frame after reconnect failed for account {account_id}: {err}"
                 ));
+                excluded_account_ids.insert(account_id.clone());
                 previous_account_id = Some(account_id);
             }
         }
@@ -2465,29 +2518,69 @@ pub(crate) async fn connect_upstream_websocket_request_detailed(
     WsConnectError,
 > {
     ensure_rustls_crypto_provider();
+    let compressed_request = request.clone();
+    let first_result = connect_upstream_websocket_request_with_config(
+        compressed_request,
+        ws_url,
+        proxy_url,
+        responses_ws_transport_config(true),
+    )
+    .await;
+    match first_result {
+        Ok(result) => Ok(result),
+        Err(err) if err.is_compression_negotiation_rejection() => {
+            log::info!(
+                "event=responses_ws_compression_rejected retry=without_permessage_deflate ws_url={}",
+                ws_url
+            );
+            connect_upstream_websocket_request_with_config(
+                request,
+                ws_url,
+                proxy_url,
+                responses_ws_transport_config(false),
+            )
+            .await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn connect_upstream_websocket_request_with_config(
+    request: WsClientRequest,
+    ws_url: &str,
+    proxy_url: Option<&str>,
+    config: WebSocketConfig,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+        WsClientResponse,
+    ),
+    WsConnectError,
+> {
     let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) else {
-        return connect_async_tls_with_config(
-            request,
-            Some(responses_ws_transport_config()),
-            false,
-            None,
-        )
-        .await
-        .map_err(WsConnectError::from_tungstenite);
+        return connect_async_tls_with_config(request, Some(config), false, None)
+            .await
+            .map_err(WsConnectError::from_tungstenite);
     };
 
     let stream = connect_websocket_proxy_tcp(ws_url, proxy_url)
         .await
         .map_err(WsConnectError::from_message)?;
-    client_async_tls_with_config(request, stream, Some(responses_ws_transport_config()), None)
+    client_async_tls_with_config(request, stream, Some(config), None)
         .await
         .map_err(WsConnectError::from_tungstenite)
 }
 
-fn responses_ws_transport_config() -> WebSocketConfig {
-    WebSocketConfig::default()
+fn responses_ws_transport_config(enable_permessage_deflate: bool) -> WebSocketConfig {
+    let mut config = WebSocketConfig::default()
         .max_message_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES))
-        .max_frame_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(RESPONSES_WS_MAX_MESSAGE_BYTES));
+    if enable_permessage_deflate {
+        let mut extensions = ExtensionsConfig::default();
+        extensions.permessage_deflate = Some(DeflateConfig::default());
+        config.extensions = extensions;
+    }
+    config
 }
 
 async fn connect_websocket_proxy_tcp(ws_url: &str, proxy_url: &str) -> Result<TcpStream, String> {
