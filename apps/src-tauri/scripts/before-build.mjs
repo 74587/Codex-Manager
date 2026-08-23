@@ -151,24 +151,6 @@ async function waitForDesktopAppPage() {
   console.log(`前端首页已就绪: http://${desktopDevHost}:${desktopNextPort}/`);
 }
 
-function warmupDesktopHomePageInBackground() {
-  setTimeout(() => {
-    fetchDesktopDevPath("/", desktopDevWarmupTimeoutMs, desktopNextPort)
-      .then((warmed) => {
-        if (warmed) {
-          console.log(`前端首页已后台预热完成: http://${desktopDevHost}:${desktopNextPort}/`);
-          return;
-        }
-
-        console.warn(`前端首页后台预热未返回成功状态: http://${desktopDevHost}:${desktopNextPort}/`);
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`前端首页后台预热失败，将由窗口访问时继续编译: ${message}`);
-      });
-  }, 0);
-}
-
 function isExpectedDesktopDevProxyDisconnect(error) {
   return ["ECONNABORTED", "ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED"].includes(error?.code);
 }
@@ -472,7 +454,6 @@ if (task === "dev:desktop") {
   });
   await waitForDesktopAppPage();
   createDesktopDevProxy();
-  warmupDesktopHomePageInBackground();
   child.on("exit", (code, signal) => {
     if (signal) {
       process.exit(0);
