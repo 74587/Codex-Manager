@@ -20,3 +20,12 @@ tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev 
 
 [workspace.package]
 version = "0.5.4"
+
+# Keep local development artifacts compact while retaining file/line backtraces.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
