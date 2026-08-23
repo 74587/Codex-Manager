@@ -20,6 +20,10 @@ const TRAY_PREVIEW_HEIGHT: f64 = 430.0;
 const TRAY_PREVIEW_MARGIN: f64 = 8.0;
 static SHOW_MAIN_WINDOW_PENDING: AtomicBool = AtomicBool::new(false);
 static MAIN_WINDOW_CREATED_ONCE: AtomicBool = AtomicBool::new(false);
+// A window can receive several startup page load events while an external
+// navigation is still pending. Only the first event should issue the app
+// navigation; the flag is reset when a new webview window is created.
+static MAIN_WINDOW_APP_NAVIGATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 struct MainWindowHandle {
     window: tauri::WebviewWindow,
@@ -134,7 +138,7 @@ pub(crate) fn navigate_main_window_to_startup_app(app: &tauri::AppHandle) -> Res
             let _ = sender.send(Err("main window is missing".to_string()));
             return;
         };
-        let result = navigate_window_to_app_url(&window).map_err(|err| err.to_string());
+        let result = request_main_window_app_navigation(&window).map_err(|err| err.to_string());
         let _ = sender.send(result);
     }) {
         return Err(format!("schedule startup app navigation failed: {err}"));
@@ -242,6 +246,7 @@ fn ensure_main_window(app: &tauri::AppHandle) -> Option<MainWindowHandle> {
             return None;
         }
     };
+    MAIN_WINDOW_APP_NAVIGATION_REQUESTED.store(false, Ordering::Release);
 
     match builder
         .on_page_load(|window, payload| {
@@ -290,11 +295,25 @@ fn should_navigate_loaded_main_window_to_app(path: &str) -> bool {
 }
 
 fn navigate_main_window_to_app(window: &tauri::WebviewWindow) {
-    if let Err(err) = navigate_window_to_app_url(window) {
+    if let Err(err) = request_main_window_app_navigation(window) {
         log::warn!(
             "navigate main window from startup page to app failed: {}",
             err
         );
+    }
+}
+
+fn request_main_window_app_navigation(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    if MAIN_WINDOW_APP_NAVIGATION_REQUESTED.swap(true, Ordering::AcqRel) {
+        log::debug!("main window app navigation skipped because one is already pending");
+        return Ok(());
+    }
+    match navigate_window_to_app_url(window) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            MAIN_WINDOW_APP_NAVIGATION_REQUESTED.store(false, Ordering::Release);
+            Err(err)
+        }
     }
 }
 
