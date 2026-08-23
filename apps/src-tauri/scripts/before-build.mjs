@@ -64,7 +64,7 @@ async function hasReusableDesktopDevServer() {
   }
 
   try {
-    const response = await fetch(`http://${desktopDevHost}:${desktopDevPort}/startup.html`, {
+    const response = await fetch(`http://${desktopDevHost}:${desktopDevPort}/`, {
       signal: AbortSignal.timeout(1500),
     });
     return response.ok;
@@ -129,11 +129,11 @@ async function fetchDesktopDevPath(path, timeoutMs, port = desktopDevPort) {
   return response.ok;
 }
 
-async function waitForDesktopStartupPage() {
+async function waitForDesktopAppPage() {
   const deadline = Date.now() + desktopDevWarmupTimeoutMs;
   while (Date.now() <= deadline) {
     try {
-      if (await fetchDesktopDevPath("/startup.html", 1500, desktopNextPort)) {
+      if (await fetchDesktopDevPath("/", 1500, desktopNextPort)) {
         break;
       }
     } catch {
@@ -141,14 +141,14 @@ async function waitForDesktopStartupPage() {
     }
 
     if (Date.now() >= deadline) {
-      console.error(`等待前端开发服务就绪超时: http://${desktopDevHost}:${desktopNextPort}/startup.html`);
+      console.error(`等待前端首页就绪超时: http://${desktopDevHost}:${desktopNextPort}/`);
       process.exit(1);
     }
 
     await sleep(desktopDevWaitIntervalMs);
   }
 
-  console.log(`前端静态启动页已就绪: http://${desktopDevHost}:${desktopNextPort}/startup.html`);
+  console.log(`前端首页已就绪: http://${desktopDevHost}:${desktopNextPort}/`);
 }
 
 function warmupDesktopHomePageInBackground() {
@@ -470,7 +470,7 @@ if (task === "dev:desktop") {
     console.error(`前端开发服务启动失败: ${error.message}`);
     process.exit(1);
   });
-  await waitForDesktopStartupPage();
+  await waitForDesktopAppPage();
   createDesktopDevProxy();
   warmupDesktopHomePageInBackground();
   child.on("exit", (code, signal) => {
