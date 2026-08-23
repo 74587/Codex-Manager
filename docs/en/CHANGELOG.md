@@ -5,6 +5,13 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-23
+
+### Fixed
+
+- Fixed a brief period where the service was unavailable when restoring the desktop window after startup-with-main-window was disabled.
+- Streamlined startup and restore by coalescing window navigation, waiting for the home page before showing the window, reusing an initialized service first, and removing duplicate warmup requests.
+
 ## [0.5.4] - 2026-08-23
 
 ### Changed
