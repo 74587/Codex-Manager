@@ -6,7 +6,9 @@ import {
 import {
   normalizeAccountList,
   normalizeAggregateApiBalanceRefreshResult,
+  normalizeAggregateApiAssociateModelsResult,
   normalizeAggregateApiCreateResult,
+  normalizeAggregateApiFetchModelsResult,
   normalizeAggregateApiList,
   normalizeAggregateApiSecretResult,
   normalizeAggregateApiTestResult,
@@ -61,8 +63,10 @@ import {
   AccountListResult,
   AccountUsage,
   AggregateApi,
+  AggregateApiAssociateModelsResult,
   AggregateApiBalanceRefreshResult,
   AggregateApiCreateResult,
+  AggregateApiFetchModelsResult,
   AggregateApiSecretResult,
   AggregateApiTestResult,
   ApiKey,
@@ -888,6 +892,24 @@ export const accountClient = {
       withAddr({ id: apiId })
     );
     return normalizeAggregateApiBalanceRefreshResult(result);
+  },
+  async fetchAggregateApiModels(apiId: string): Promise<AggregateApiFetchModelsResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_fetch_models",
+      withAddr({ id: apiId }),
+    );
+    return normalizeAggregateApiFetchModelsResult(result);
+  },
+  async associateAggregateApiModels(
+    apiId: string,
+    upstreamModels: string[],
+    displayNames?: Record<string, string>,
+  ): Promise<AggregateApiAssociateModelsResult> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_associate_models",
+      withAddr({ apiId, upstreamModels, displayNames: displayNames || null }),
+    );
+    return normalizeAggregateApiAssociateModelsResult(result);
   },
   async listApiKeys(): Promise<ApiKey[]> {
     const result = await invoke<unknown>("service_apikey_list", withAddr());

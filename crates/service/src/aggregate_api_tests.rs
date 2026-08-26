@@ -9,9 +9,10 @@ use tiny_http::{Response, Server};
 
 use super::{
     action_path_or_default, extract_custom_balance, extract_generic_balance,
-    extract_new_api_balance, list_aggregate_apis, normalize_action_override,
-    normalize_custom_balance_query_config, normalize_provider_type, normalize_provider_type_value,
-    probe_claude_endpoint, probe_codex_endpoint, provider_default_url, read_aggregate_api_secret,
+    extract_new_api_balance, list_aggregate_apis, models_endpoint, normalize_action_override,
+    normalize_custom_balance_query_config, normalize_fetched_model_id, normalize_provider_type,
+    normalize_provider_type_value, parse_fetched_models, probe_claude_endpoint,
+    probe_codex_endpoint, provider_default_url, read_aggregate_api_secret,
     CustomBalanceQueryConfig, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_COMPATIBLE,
     AGGREGATE_API_PROVIDER_GEMINI,
 };
@@ -204,6 +205,50 @@ fn gemini_provider_type_is_normalized_independently() {
     assert_eq!(
         normalize_provider_type_value("compatible"),
         AGGREGATE_API_PROVIDER_COMPATIBLE
+    );
+}
+
+#[test]
+fn fetched_models_parser_accepts_common_shapes_and_deduplicates() {
+    let data: Value = serde_json::json!({
+        "data": [{"id": "gpt-a", "name": "A"}, {"model": "GPT-A"}],
+    });
+    assert_eq!(
+        parse_fetched_models(&data, false),
+        vec![("gpt-a".to_string(), Some("A".to_string()))]
+    );
+    let models: Value = serde_json::json!({"models": [{"name": "models/gemini-2.5"}]});
+    assert_eq!(parse_fetched_models(&models, true)[0].0, "gemini-2.5");
+    let array: Value = serde_json::json!([{"slug": "top-level"}]);
+    assert_eq!(parse_fetched_models(&array, false)[0].0, "top-level");
+}
+
+#[test]
+fn fetched_model_ids_reject_controls_and_normalize_gemini_resources() {
+    assert_eq!(
+        normalize_fetched_model_id("models/foo", true).as_deref(),
+        Some("foo")
+    );
+    assert!(normalize_fetched_model_id("bad model", false).is_none());
+    assert!(normalize_fetched_model_id("\u{0000}", false).is_none());
+}
+
+#[test]
+fn models_endpoint_uses_provider_defaults() {
+    let mut api = aggregate_api_with_action(None);
+    api.url = "https://example.test".to_string();
+    assert_eq!(
+        models_endpoint(&api, "codex"),
+        "https://example.test/v1/models"
+    );
+    assert_eq!(
+        models_endpoint(&api, "gemini"),
+        "https://example.test/v1beta/models"
+    );
+    api.url = "https://example.test/v1beta".to_string();
+    assert_eq!(
+        models_endpoint(&api, "gemini"),
+        "https://example.test/v1beta/models"
     );
 }
 

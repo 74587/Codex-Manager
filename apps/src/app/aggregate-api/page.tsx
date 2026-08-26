@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   Gauge,
+  Link as LinkIcon,
   PencilLine,
   Plus,
   RefreshCw,
@@ -19,6 +20,7 @@ import { toast } from "sonner";
 
 import { PageHeader, MetricCard, PageWorkspace } from "@/components/layout/page-workspace";
 import { AggregateApiModal } from "@/components/modals/aggregate-api-modal";
+import { AggregateApiModelAssociationModal } from "@/components/modals/aggregate-api-model-association-modal";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,7 @@ import type {
   AggregateApi,
   AggregateApiBalanceSnapshot,
   AggregateApiSecretResult,
+  AggregateApiFetchedModel,
 } from "@/types/api-key";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -132,6 +135,10 @@ export default function AggregateApiPage() {
     null,
   );
   const [togglingApiId, setTogglingApiId] = useState<string | null>(null);
+  const [associationApiId, setAssociationApiId] = useState<string | null>(null);
+  const [associationItems, setAssociationItems] = useState<AggregateApiFetchedModel[]>([]);
+  const [fetchingModelsApiId, setFetchingModelsApiId] = useState<string | null>(null);
+  const [associatingModels, setAssociatingModels] = useState(false);
 
   const { data: aggregateApis = [], isLoading } = useQuery({
     queryKey: ["aggregate-apis"],
@@ -146,6 +153,8 @@ export default function AggregateApiPage() {
     if (isPageActive) return;
     const frameId = window.requestAnimationFrame(() => {
       setModalOpen(false);
+      setAssociationApiId(null);
+      setAssociationItems([]);
       setEditingId(null);
       setDeleteId(null);
       setRevealedSecrets({});
@@ -264,13 +273,65 @@ export default function AggregateApiPage() {
     }
   };
 
+  const associationApi = associationApiId
+    ? aggregateApis.find((api) => api.id === associationApiId) || null
+    : null;
+
+  const openAssociation = async (apiId: string) => {
+    setFetchingModelsApiId(apiId);
+    try {
+      const result = await accountClient.fetchAggregateApiModels(apiId);
+      setAssociationApiId(apiId);
+      setAssociationItems(result.items);
+    } catch (error) {
+      toast.error(`${t("拉取模型失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setFetchingModelsApiId(null);
+    }
+  };
+
+  const associateModels = async (upstreamModels: string[]) => {
+    if (!associationApiId) return;
+    setAssociatingModels(true);
+    try {
+      const selectedSet = new Set(upstreamModels);
+      const displayNames = Object.fromEntries(
+        associationItems
+          .filter((item) => selectedSet.has(item.upstreamModel) && item.displayName)
+          .map((item) => [item.upstreamModel, item.displayName as string]),
+      );
+      const result = await accountClient.associateAggregateApiModels(
+        associationApiId,
+        upstreamModels,
+        displayNames,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
+        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
+      ]);
+      toast.success(t("关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}", {
+        created: result.createdModels.length,
+        added: result.addedRoutes.length,
+        unchanged: result.unchangedRoutes.length,
+      }));
+      setAssociationApiId(null);
+      setAssociationItems([]);
+    } catch (error) {
+      toast.error(`${t("关联模型失败")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAssociatingModels(false);
+    }
+  };
+
   return (
     <>
       <PageWorkspace>
         <PageHeader
           eyebrow={t("显式路由")}
           title={t("聚合 API")}
-          description={t("这里只管理上游连接；模型路由在“模型管理”中显式配置，页面不会访问供应商 `/models`。")}
+          description={t("不会自动发现上游模型；管理员可主动拉取并选择性关联到模型目录 V2。")}
           actions={
             <Button
               size="sm"
@@ -435,6 +496,14 @@ export default function AggregateApiPage() {
                           </TableCell>
                           <TableCell>
                             <div className="flex justify-end gap-1">
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={<Button type="button" variant="ghost" size="icon" aria-label={t("拉取并关联模型")} disabled={fetchingModelsApiId === api.id} onClick={() => void openAssociation(api.id)} />}
+                                >
+                                  <LinkIcon className={`h-4 w-4 ${fetchingModelsApiId === api.id ? "animate-pulse" : ""}`} />
+                                </TooltipTrigger>
+                                <TooltipContent>{t("拉取并关联模型")}</TooltipContent>
+                              </Tooltip>
                               <Button type="button" variant="ghost" size="icon" aria-label={t("编辑聚合 API")} onClick={() => { setEditingId(api.id); setModalOpen(true); }}>
                                 <PencilLine className="h-4 w-4" />
                               </Button>
@@ -459,6 +528,20 @@ export default function AggregateApiPage() {
         onOpenChange={setModalOpen}
         aggregateApi={editingApi}
         defaultSort={defaultCreateSort}
+      />
+
+      <AggregateApiModelAssociationModal
+        open={Boolean(associationApiId)}
+        onOpenChange={(open) => {
+          if (!open && !associatingModels) {
+            setAssociationApiId(null);
+            setAssociationItems([]);
+          }
+        }}
+        aggregateApi={associationApi}
+        items={associationItems}
+        isSaving={associatingModels}
+        onAssociate={associateModels}
       />
 
       <ConfirmDialog
