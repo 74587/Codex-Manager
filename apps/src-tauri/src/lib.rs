@@ -223,6 +223,9 @@ pub fn run() {
                     err
                 );
             }
+            if let Err(err) = commands::updater::cleanup_completed_update_artifacts(app.handle()) {
+                log::warn!("清理已完成更新目录失败：{err}");
+            }
             sync_startup_window_state();
             sync_window_ui_mount_state(app.handle());
             schedule_startup_main_window(app.handle());
