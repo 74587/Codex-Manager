@@ -933,8 +933,7 @@ fn native_codex_image_extension_is_allowed_to_use_images_compat_adapter() {
         "x-openai-actor-authorization",
         axum::http::HeaderValue::from_static("local-image-extension"),
     );
-    let incoming_headers =
-        super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers);
+    let incoming_headers = super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers);
 
     assert!(should_adapt_openai_images_request(true, &incoming_headers));
     assert!(!should_adapt_openai_images_request(

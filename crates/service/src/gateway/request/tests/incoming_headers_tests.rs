@@ -206,8 +206,7 @@ fn codex_headers_are_captured_from_http_headers() {
     assert_eq!(snapshot.oai_attestation(), Some("attest_123"));
     let passthrough = snapshot.passthrough_codex_headers();
     assert!(passthrough.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("x-openai-internal-codex-responses-lite")
-            && value == "true"
+        name.eq_ignore_ascii_case("x-openai-internal-codex-responses-lite") && value == "true"
     }));
     assert!(passthrough.iter().any(|(name, value)| {
         name.eq_ignore_ascii_case("x-openai-actor-authorization")
