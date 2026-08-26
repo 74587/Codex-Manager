@@ -746,6 +746,14 @@ fn websocket_frame_aligns_prompt_cache_key_with_native_conversation_anchor() {
 fn upstream_websocket_request_forwards_oai_attestation_header() {
     let mut headers = HeaderMap::new();
     headers.insert("x-oai-attestation", HeaderValue::from_static("attest-ws"));
+    headers.insert(
+        "x-openai-actor-authorization",
+        HeaderValue::from_static("local-image-extension"),
+    );
+    headers.insert(
+        "x-codex-image-turn-id",
+        HeaderValue::from_static("turn-image-ws"),
+    );
     let context = WsRequestContext {
         api_key: sample_api_key(),
         incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
@@ -773,6 +781,20 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
             .get("x-oai-attestation")
             .and_then(|value| value.to_str().ok()),
         Some("attest-ws")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("x-openai-actor-authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("local-image-extension")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get("x-codex-image-turn-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("turn-image-ws")
     );
     assert_eq!(
         request

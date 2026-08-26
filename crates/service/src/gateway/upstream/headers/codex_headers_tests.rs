@@ -123,6 +123,14 @@ fn build_codex_upstream_headers_keeps_final_affinity_shape() {
             "x-openai-internal-codex-responses-lite".to_string(),
             "true".to_string(),
         ),
+        (
+            "x-openai-actor-authorization".to_string(),
+            "local-image-extension".to_string(),
+        ),
+        (
+            "x-codex-image-turn-id".to_string(),
+            "turn-image-123".to_string(),
+        ),
     ];
 
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
@@ -221,6 +229,14 @@ fn build_codex_upstream_headers_keeps_final_affinity_shape() {
     assert_eq!(
         header_value(&headers, "x-openai-internal-codex-responses-lite"),
         Some("true")
+    );
+    assert_eq!(
+        header_value(&headers, "x-openai-actor-authorization"),
+        Some("local-image-extension")
+    );
+    assert_eq!(
+        header_value(&headers, "x-codex-image-turn-id"),
+        Some("turn-image-123")
     );
 }
 

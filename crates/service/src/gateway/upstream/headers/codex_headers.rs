@@ -7,6 +7,8 @@ const X_CODEX_INFERENCE_CALL_ID_HEADER_NAME: &str = "x-codex-inference-call-id";
 const X_OAI_ATTESTATION_HEADER_NAME: &str = "x-oai-attestation";
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME: &str =
     "x-openai-internal-codex-responses-lite";
+const X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME: &str = "x-openai-actor-authorization";
+const X_CODEX_IMAGE_TURN_ID_HEADER_NAME: &str = "x-codex-image-turn-id";
 
 fn anchor_fingerprint_or_dash(value: Option<&str>) -> String {
     value
@@ -438,7 +440,9 @@ fn append_passthrough_codex_headers(
     _enabled: bool,
 ) {
     for (name, value) in passthrough_headers {
-        if !name.eq_ignore_ascii_case(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME)
+        if !(name.eq_ignore_ascii_case(X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER_NAME)
+            || name.eq_ignore_ascii_case(X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME)
+            || name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME))
             || headers
                 .iter()
                 .any(|(existing, _)| existing.eq_ignore_ascii_case(name))

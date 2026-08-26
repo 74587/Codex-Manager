@@ -301,6 +301,13 @@ fn is_non_native_openai_responses_api_request(
         && !native_codex_client
 }
 
+fn should_adapt_openai_images_request(
+    native_codex_client: bool,
+    incoming_headers: &super::super::IncomingHeaderSnapshot,
+) -> bool {
+    !native_codex_client || incoming_headers.has_codex_image_extension_headers()
+}
+
 fn is_compact_subagent_request(
     normalized_path: &str,
     incoming_headers: &super::super::IncomingHeaderSnapshot,
@@ -2108,7 +2115,7 @@ pub(super) fn build_local_validation_result(
     let (mut path, mut response_adapter, mut gemini_stream_output_mode, mut tool_name_restore_map) =
         if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
             && is_openai_images_generations_path(normalized_path.as_str())
-            && !native_codex_client
+            && should_adapt_openai_images_request(native_codex_client, &incoming_headers)
         {
             if !super::super::runtime_config::codex_image_generation_enabled() {
                 return Err(LocalValidationError::new(
@@ -2135,7 +2142,7 @@ pub(super) fn build_local_validation_result(
             )
         } else if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
             && is_openai_images_edits_path(normalized_path.as_str())
-            && !native_codex_client
+            && should_adapt_openai_images_request(native_codex_client, &incoming_headers)
         {
             if !super::super::runtime_config::codex_image_generation_enabled() {
                 return Err(LocalValidationError::new(

@@ -2961,6 +2961,11 @@ fn build_upstream_websocket_request(
     if let Some(oai_attestation) = context.incoming_headers.oai_attestation() {
         insert_header(headers, "x-oai-attestation", oai_attestation)?;
     }
+    // Preserve the small, explicitly allowlisted set of Codex capability headers
+    // (including image actor authorization and turn correlation) on WebSocket upstreams.
+    for (name, value) in context.incoming_headers.passthrough_codex_headers() {
+        insert_header(headers, name, value)?;
+    }
     Ok(request)
 }
 
