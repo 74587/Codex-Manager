@@ -74,12 +74,12 @@
 <table>
   <tr>
     <td align="center" valign="middle" width="180">
-      <a href="https://vmcardio.com/zh/register?code=045237">
+      <a href="https://vmcardio.com/zh/register?code=OPK6X2DSLW">
         <img src="assets/images/sponsors/vmcard.jpg" alt="VMCard" width="120" />
       </a>
     </td>
     <td valign="top">
-      <strong><a href="https://vmcardio.com/zh/register?code=045237">VMCard 企业级虚拟卡发卡平台</a></strong>，面向 AI 账号平台、AI API 服务商及规模化订阅团队，提供专属美国 Visa 卡段、API 批量发卡及企业级用卡管理。<br />
+      <strong><a href="https://vmcardio.com/zh/register?code=OPK6X2DSLW">VMCard 企业级虚拟卡发卡平台</a></strong>，面向 AI 账号平台、AI API 服务商及规模化订阅团队，提供专属美国 Visa 卡段、API 批量发卡及企业级用卡管理。<br />
       全网最低结算汇率，满足企业长期、规模化支付需求。商务合作：<a href="https://t.me/Vmcardio_yuki">@Vmcardio_yuki</a>
     </td>
   </tr>
