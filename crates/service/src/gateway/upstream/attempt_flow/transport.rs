@@ -1118,6 +1118,10 @@ fn send_upstream_request_with_compression_override(
         incoming_headers.originator(),
         drop_session_headers,
     );
+    super::super::header_profile::apply_codex_target_accept_header(
+        &mut upstream_headers,
+        target_url,
+    );
     if should_force_connection_close(target_url) {
         // 中文注释：本地 loopback mock/代理更容易复用到脏 keep-alive 连接；
         // 对 localhost/127.0.0.1 强制 close，避免请求落到已失效连接。

@@ -451,6 +451,8 @@ export function GatewayModeCard({
   selectedApiKeyId,
   onSelectApiKey,
   gatewayBaseUrl,
+  supportsWebsockets,
+  onSupportsWebsocketsChange,
   onApply,
   isPending,
   selectedApiKey,
@@ -466,6 +468,8 @@ export function GatewayModeCard({
   selectedApiKeyId: string;
   onSelectApiKey: (value: string | null) => void;
   gatewayBaseUrl: string;
+  supportsWebsockets: boolean;
+  onSupportsWebsocketsChange: (enabled: boolean) => void;
   onApply: () => void;
   isPending: boolean;
   selectedApiKey: CodexProfileApiKeyCandidate | undefined;
@@ -542,6 +546,25 @@ export function GatewayModeCard({
             </p>
           </div>
         )}
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-border/70 bg-background/45 p-4">
+          <div className="grid gap-1">
+            <Label htmlFor="gateway-responses-websocket">
+              {t("启用 Responses WebSocket")}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "关闭时 Codex 使用普通 Responses HTTP 流；开启时使用 Responses WebSocket。仅在当前平台密钥支持时开启。",
+              )}
+            </p>
+          </div>
+          <Switch
+            id="gateway-responses-websocket"
+            checked={supportsWebsockets}
+            onCheckedChange={onSupportsWebsocketsChange}
+            disabled={!isServiceReady || isMutating}
+            aria-label={t("启用 Responses WebSocket")}
+          />
+        </div>
         <ConnectionPreview
           t={t}
           connection={t("通过 CodexManager")}

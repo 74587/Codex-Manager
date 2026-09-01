@@ -743,7 +743,7 @@ fn websocket_frame_aligns_prompt_cache_key_with_native_conversation_anchor() {
 }
 
 #[test]
-fn upstream_websocket_request_forwards_oai_attestation_header() {
+fn upstream_websocket_request_filters_local_image_marker_and_forwards_oai_attestation() {
     let mut headers = HeaderMap::new();
     headers.insert("x-oai-attestation", HeaderValue::from_static("attest-ws"));
     headers.insert(
@@ -787,7 +787,7 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
             .headers()
             .get("x-openai-actor-authorization")
             .and_then(|value| value.to_str().ok()),
-        Some("local-image-extension")
+        None
     );
     assert_eq!(
         request
@@ -811,6 +811,43 @@ fn upstream_websocket_request_forwards_oai_attestation_header() {
         Some("Bearer bearer-ws")
     );
     assert!(request.headers().get("x-openai-fedramp").is_none());
+}
+
+#[test]
+fn upstream_websocket_request_preserves_real_actor_authorization() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-openai-actor-authorization",
+        HeaderValue::from_static("actor-biscuit"),
+    );
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
+        prompt_cache_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let account = sample_account();
+    let authorization = websocket_bearer_authorization("bearer-ws");
+
+    let request = build_upstream_websocket_request(
+        "wss://chatgpt.com/backend-api/codex/v1/responses",
+        &account,
+        &authorization,
+        &context,
+        false,
+    )
+    .unwrap_or_else(|err| panic!("build upstream websocket request failed: {}", err.message));
+
+    assert_eq!(
+        request
+            .headers()
+            .get("x-openai-actor-authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("actor-biscuit")
+    );
 }
 
 #[test]

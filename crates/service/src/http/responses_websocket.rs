@@ -2964,6 +2964,9 @@ fn build_upstream_websocket_request(
     // Preserve the small, explicitly allowlisted set of Codex capability headers
     // (including image actor authorization and turn correlation) on WebSocket upstreams.
     for (name, value) in context.incoming_headers.passthrough_codex_headers() {
+        if crate::gateway::is_codexmanager_image_extension_actor_authorization(name, value) {
+            continue;
+        }
         insert_header(headers, name, value)?;
     }
     Ok(request)

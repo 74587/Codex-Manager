@@ -215,7 +215,7 @@ fn codex_headers_are_captured_from_http_headers() {
     assert!(passthrough.iter().any(|(name, value)| {
         name.eq_ignore_ascii_case("x-codex-image-turn-id") && value == "turn-image-123"
     }));
-    assert!(snapshot.has_codex_image_extension_headers());
+    assert!(snapshot.has_codex_image_turn_id());
 }
 
 #[test]

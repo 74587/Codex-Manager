@@ -63,6 +63,22 @@ fn resolve_effective_request_overrides(
     )
 }
 
+fn should_preserve_openai_images_request_fields(path: &str) -> bool {
+    is_openai_images_generations_path(path) || is_openai_images_edits_path(path)
+}
+
+fn resolve_effective_request_overrides_for_path(
+    api_key: &ApiKey,
+    path: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if should_preserve_openai_images_request_fields(path) {
+        // A platform key's text-model, reasoning, and service-tier defaults are not valid Images
+        // API overrides. Codex's extension explicitly sends gpt-image-1.5 on this request.
+        return (None, None, None);
+    }
+    resolve_effective_request_overrides(api_key)
+}
+
 fn instruction_protocol_for_passthrough(
     protocol_type: &str,
 ) -> crate::models_v2::instructions::InstructionProtocolV2 {
@@ -305,7 +321,11 @@ fn should_adapt_openai_images_request(
     native_codex_client: bool,
     incoming_headers: &super::super::IncomingHeaderSnapshot,
 ) -> bool {
-    !native_codex_client || incoming_headers.has_codex_image_extension_headers()
+    // Codex's image extension uses its own HTTP client. Unlike the main Responses client, that
+    // request is only guaranteed to carry x-codex-image-turn-id (plus the thread originator), so
+    // the general native-client detector can legitimately return false. The turn id is the
+    // extension's canonical request signal and must keep the standalone Images API path intact.
+    !native_codex_client && !incoming_headers.has_codex_image_turn_id()
 }
 
 fn is_compact_subagent_request(
@@ -1791,8 +1811,9 @@ fn apply_passthrough_request_overrides(
     bool,
     Option<String>,
 ) {
+    let preserve_images_fields = should_preserve_openai_images_request_fields(path);
     let (default_effective_model, effective_reasoning, effective_service_tier) =
-        resolve_effective_request_overrides(api_key);
+        resolve_effective_request_overrides_for_path(api_key, path);
     let effective_model = model_override
         .map(str::to_string)
         .or(default_effective_model);
@@ -1812,10 +1833,16 @@ fn apply_passthrough_request_overrides(
         .unwrap_or_default();
     (
         rewritten_body,
-        request_meta.model.or(api_key.model_slug.clone()),
-        request_meta
-            .reasoning_effort
-            .or(api_key.reasoning_effort.clone()),
+        request_meta.model.or_else(|| {
+            (!preserve_images_fields)
+                .then(|| api_key.model_slug.clone())
+                .flatten()
+        }),
+        request_meta.reasoning_effort.or_else(|| {
+            (!preserve_images_fields)
+                .then(|| api_key.reasoning_effort.clone())
+                .flatten()
+        }),
         explicit_service_tier_for_log,
         request_meta.service_tier,
         request_meta.has_prompt_cache_key,
@@ -2232,8 +2259,9 @@ pub(super) fn build_local_validation_result(
     // 中文注释：下游调用方的 stream 语义必须来自原始客户端请求；
     // 否则协议适配（例如 Anthropic/Gemini 转 /responses 强制 stream=true）会污染响应模式判断。
     let client_request_meta = initial_request_meta.clone();
+    let preserve_images_fields = should_preserve_openai_images_request_fields(path.as_str());
     let (mut effective_model, effective_reasoning, effective_service_tier) =
-        resolve_effective_request_overrides(&api_key);
+        resolve_effective_request_overrides_for_path(&api_key, path.as_str());
     effective_model = resolve_compact_model_override_for_request(
         normalized_path.as_str(),
         &incoming_headers,
@@ -2364,16 +2392,22 @@ pub(super) fn build_local_validation_result(
     let request_meta = normalized_body.metadata;
     body = normalized_body.body;
     let client_model_for_log = client_request_meta.model.clone();
-    let model_for_log = request_meta.model.or(api_key.model_slug.clone());
+    let model_for_log = request_meta.model.or_else(|| {
+        (!preserve_images_fields)
+            .then(|| api_key.model_slug.clone())
+            .flatten()
+    });
     let model_source_for_log = resolve_override_source_for_log(
         client_model_for_log.as_deref(),
         model_for_log.as_deref(),
         api_key.model_slug.as_deref(),
     );
     let client_reasoning_for_log = client_request_meta.reasoning_effort.clone();
-    let reasoning_for_log = request_meta
-        .reasoning_effort
-        .or(api_key.reasoning_effort.clone());
+    let reasoning_for_log = request_meta.reasoning_effort.or_else(|| {
+        (!preserve_images_fields)
+            .then(|| api_key.reasoning_effort.clone())
+            .flatten()
+    });
     let reasoning_source_for_log = resolve_reasoning_source_for_log(
         client_reasoning_for_log.as_deref(),
         reasoning_for_log.as_deref(),

@@ -665,12 +665,9 @@ impl IncomingHeaderSnapshot {
         self.passthrough_codex_headers.as_slice()
     }
 
-    pub(crate) fn has_codex_image_extension_headers(&self) -> bool {
+    pub(crate) fn has_codex_image_turn_id(&self) -> bool {
         self.passthrough_codex_headers.iter().any(|(name, value)| {
-            (name.eq_ignore_ascii_case(X_OPENAI_ACTOR_AUTHORIZATION_HEADER_NAME)
-                && value.trim() == "local-image-extension")
-                || (name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME)
-                    && !value.trim().is_empty())
+            name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME) && !value.trim().is_empty()
         })
     }
 

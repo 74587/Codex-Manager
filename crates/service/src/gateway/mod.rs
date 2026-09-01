@@ -2,6 +2,13 @@ use crate::storage_helpers::open_storage;
 
 pub(crate) const MISSING_AUTH_JSON_OPENAI_API_KEY_ERROR: &str =
     "配置错误：未配置auth.json的OPENAI_API_KEY(invalid api key)";
+pub(crate) const X_OPENAI_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
+pub(crate) const CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION: &str = "local-image-extension";
+
+pub(crate) fn is_codexmanager_image_extension_actor_authorization(name: &str, value: &str) -> bool {
+    name.eq_ignore_ascii_case(X_OPENAI_ACTOR_AUTHORIZATION_HEADER)
+        && value.trim() == CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION
+}
 
 pub(crate) fn bilingual_error(
     chinese_description: impl AsRef<str>,

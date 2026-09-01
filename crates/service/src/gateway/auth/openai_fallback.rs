@@ -242,6 +242,7 @@ pub(super) fn try_openai_fallback(
         };
         super::upstream::header_profile::build_codex_upstream_headers(header_input)
     };
+    super::upstream::header_profile::apply_codex_target_accept_header(&mut upstream_headers, &url);
     if should_force_connection_close(&url) {
         force_connection_close(&mut upstream_headers);
     }

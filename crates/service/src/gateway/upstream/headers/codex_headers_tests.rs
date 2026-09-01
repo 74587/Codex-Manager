@@ -1,4 +1,5 @@
 use super::{
+    append_passthrough_codex_headers, apply_codex_target_accept_header,
     build_codex_compact_upstream_headers, build_codex_upstream_headers,
     resolve_codex_installation_id,
 };
@@ -125,7 +126,7 @@ fn build_codex_upstream_headers_keeps_final_affinity_shape() {
         ),
         (
             "x-openai-actor-authorization".to_string(),
-            "local-image-extension".to_string(),
+            "actor-biscuit".to_string(),
         ),
         (
             "x-codex-image-turn-id".to_string(),
@@ -232,11 +233,67 @@ fn build_codex_upstream_headers_keeps_final_affinity_shape() {
     );
     assert_eq!(
         header_value(&headers, "x-openai-actor-authorization"),
-        Some("local-image-extension")
+        Some("actor-biscuit")
     );
     assert_eq!(
         header_value(&headers, "x-codex-image-turn-id"),
         Some("turn-image-123")
+    );
+}
+
+#[test]
+fn local_image_extension_actor_marker_is_not_forwarded_upstream() {
+    let passthrough = vec![
+        (
+            "x-openai-actor-authorization".to_string(),
+            crate::gateway::CODEXMANAGER_IMAGE_EXTENSION_ACTOR_AUTHORIZATION.to_string(),
+        ),
+        (
+            "x-codex-image-turn-id".to_string(),
+            "turn-image-local".to_string(),
+        ),
+    ];
+    let mut headers = Vec::new();
+
+    append_passthrough_codex_headers(&mut headers, passthrough.as_slice(), true);
+
+    assert_eq!(header_value(&headers, "x-openai-actor-authorization"), None);
+    assert_eq!(
+        header_value(&headers, "x-codex-image-turn-id"),
+        Some("turn-image-local")
+    );
+}
+
+#[test]
+fn codex_images_targets_request_json_while_responses_keep_sse() {
+    let mut image_headers = vec![("Accept".to_string(), "text/event-stream".to_string())];
+    apply_codex_target_accept_header(
+        &mut image_headers,
+        "https://chatgpt.com/backend-api/codex/images/generations?version=2",
+    );
+    assert_eq!(
+        header_value(&image_headers, "Accept"),
+        Some("application/json")
+    );
+
+    let mut edit_headers = vec![("Accept".to_string(), "text/event-stream".to_string())];
+    apply_codex_target_accept_header(
+        &mut edit_headers,
+        "https://chatgpt.com/backend-api/codex/images/edits/",
+    );
+    assert_eq!(
+        header_value(&edit_headers, "Accept"),
+        Some("application/json")
+    );
+
+    let mut responses_headers = vec![("Accept".to_string(), "text/event-stream".to_string())];
+    apply_codex_target_accept_header(
+        &mut responses_headers,
+        "https://chatgpt.com/backend-api/codex/responses",
+    );
+    assert_eq!(
+        header_value(&responses_headers, "Accept"),
+        Some("text/event-stream")
     );
 }
 

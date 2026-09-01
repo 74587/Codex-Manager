@@ -927,32 +927,28 @@ fn openai_responses_api_clients_use_codex_compat_rewrite_but_native_codex_does_n
 }
 
 #[test]
-fn native_codex_image_extension_is_allowed_to_use_images_compat_adapter() {
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        "x-openai-actor-authorization",
-        axum::http::HeaderValue::from_static("local-image-extension"),
-    );
-    let incoming_headers = super::super::super::IncomingHeaderSnapshot::from_http_headers(&headers);
-
-    assert!(should_adapt_openai_images_request(true, &incoming_headers));
-    assert!(!should_adapt_openai_images_request(
-        true,
-        &super::super::super::IncomingHeaderSnapshot::default(),
-    ));
-    assert!(should_adapt_openai_images_request(
-        false,
-        &super::super::super::IncomingHeaderSnapshot::default(),
-    ));
-
-    let mut turn_id_only_headers = axum::http::HeaderMap::new();
-    turn_id_only_headers.insert(
+fn native_codex_image_extension_bypasses_images_compat_adapter() {
+    let mut extension_headers = axum::http::HeaderMap::new();
+    extension_headers.insert(
         "x-codex-image-turn-id",
         axum::http::HeaderValue::from_static("turn-image-123"),
     );
-    let turn_id_only =
-        super::super::super::IncomingHeaderSnapshot::from_http_headers(&turn_id_only_headers);
-    assert!(should_adapt_openai_images_request(true, &turn_id_only));
+    let extension_snapshot =
+        super::super::super::IncomingHeaderSnapshot::from_http_headers(&extension_headers);
+    let third_party_snapshot = super::super::super::IncomingHeaderSnapshot::default();
+
+    assert!(!should_adapt_openai_images_request(
+        false,
+        &extension_snapshot,
+    ));
+    assert!(!should_adapt_openai_images_request(
+        true,
+        &third_party_snapshot,
+    ));
+    assert!(should_adapt_openai_images_request(
+        false,
+        &third_party_snapshot,
+    ));
 }
 
 #[test]
