@@ -976,7 +976,6 @@ fn send_upstream_request_with_compression_override(
         incoming_headers.client_request_id(),
         incoming_headers.turn_state(),
         incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
     );
     let account_id = account
         .chatgpt_account_id
@@ -986,12 +985,6 @@ fn send_upstream_request_with_compression_override(
         request_ctx.protocol_type,
         request_ctx.request_path,
         target_url,
-    );
-    super::super::super::session_affinity::log_thread_anchor_conflict(
-        request_ctx.request_path,
-        account_id,
-        incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
     );
     super::super::super::session_affinity::log_outgoing_session_affinity(
         request_ctx.request_path,

@@ -169,19 +169,12 @@ pub(super) fn try_openai_fallback(
         incoming_headers.client_request_id(),
         incoming_headers.turn_state(),
         incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
     );
 
     let account_id = account
         .chatgpt_account_id
         .as_deref()
         .or_else(|| account.workspace_id.as_deref());
-    super::session_affinity::log_thread_anchor_conflict(
-        request_path,
-        account_id,
-        incoming_headers.conversation_id(),
-        prompt_cache_key.as_deref(),
-    );
     super::session_affinity::log_outgoing_session_affinity(
         request_path,
         account_id,
