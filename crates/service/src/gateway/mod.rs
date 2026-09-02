@@ -423,6 +423,10 @@ pub(crate) use runtime_config::invalidate_account_proxy_client_cache as invalida
 pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
 pub(crate) use runtime_config::{
+    account_test_proxy_url_for_account, build_account_test_client_with_timeouts,
+    current_codex_image_main_model,
+};
+pub(crate) use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
     fresh_upstream_client_for_account, prepare_upstream_client_for_account,
     upstream_client_for_account,
