@@ -85,6 +85,22 @@
   </tr>
   <tr>
     <td align="center" valign="middle" width="180">
+      <a href="https://88api.ai/sign-up?aff=OceE">
+        <img src="assets/images/sponsors/88api.png" alt="88API" width="120" />
+      </a>
+    </td>
+    <td valign="top">
+      <strong><a href="https://88api.ai/sign-up?aff=OceE">88API 全模型聚合平台</a></strong><br />
+      🧠 聚合 GPT、Claude、Gemini、Grok、DeepSeek、Kimi、GLM 等语言与编程模型；<br />
+      🎨 图片模型：GPT-Image、Gemini、Grok 等；<br />
+      🎬 视频模型：Seedance、Veo、MiniMax Hailuo H3、Kling、Grok 等；<br />
+      🎙️ 语音能力：Whisper、TTS 等。从文案、出图、改图，到视频生成与配音。<br />
+      🎁 新用户注册送体验额度，可以检测模型能力。站内有人工客服值守！<br />
+      👉 海外企业资质运营，稳定不跑路，提供正规发票，充值比例 1:1。
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="middle" width="180">
       <a href="https://api.fenno.ai/s/4ADZ">
         <img src="assets/images/sponsors/fennoai.jpg" alt="FennoAI" width="120" />
       </a>
