@@ -41,11 +41,20 @@
     <img
       src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png"
       alt="LINUX DO"
-      width="100"
-      hight="100"
+      height="52"
+    />
+  </a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="旋武社区">
+    <img
+      src="https://xuanwu.openatom.org/logo.png"
+      alt="旋武社区"
+      height="52"
     />
   </a>
 </p>
+
+**CodexManager 已加入 [旋武社区](https://xuanwu.openatom.org/articles/project/codex-manager/)**，这是由开放原子开源基金会孵化运营的 Rust 技术社区。
 
 ## 源码说明：
 > 本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。
