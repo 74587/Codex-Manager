@@ -1,4 +1,72 @@
-# Каталог документации
+<table align="center">
+  <tr>
+    <td align="center" valign="middle" width="44%">
+      <img src="../../assets/logo/readme-header-ru.png" alt="CodexManager — локальный менеджер пула аккаунтов Codex" width="460" />
+      <br />
+      <sub>
+        <a href="https://qxnm.top/">Сайт</a> ·
+        <a href="#спонсоры">Спонсоры</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="13%">
+      <sub>
+        <a href="../../README.md">中文</a>
+        <br />
+        <a href="../en/README.md">English</a>
+        <br />
+        <strong>Русский</strong>
+        <br />
+        <a href="../ko/README.md">한국어</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="23%">
+      <a href="https://github.com/qxcnm/Codex-Manager">
+        <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
+      </a>
+      <br />
+      <a href="https://atomgit.com/qxnm/Codex-Manager">
+        <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
+      </a>
+      <br />
+      <a href="https://gitee.com/hongshungao/Codex-Manager">
+        <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
+      </a>
+    </td>
+    <td align="center" valign="middle" width="20%">
+      <sub><strong>Сообщество</strong></sub>&nbsp;
+      <a href="https://linux.do/t/topic/1688401" title="LINUX DO">
+        <img src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png" alt="LINUX DO" height="30" />
+      </a>
+      &nbsp;
+      <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="Сообщество Xuanwu">
+        <img src="https://xuanwu.openatom.org/logo.png" alt="Сообщество Xuanwu" height="30" />
+      </a>
+    </td>
+  </tr>
+</table>
+
+**CodexManager присоединился к [сообществу Xuanwu](https://xuanwu.openatom.org/articles/project/codex-manager/)** — техническому Rust-сообществу, которое развивается при поддержке OpenAtom Foundation.
+
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <strong>Примечание об исходном коде</strong>
+      <br />
+      <sub>
+        Этот продукт создан под моим руководством с помощью AI: Codex (98%) и Gemini (2%). Если вы столкнулись с проблемой, пожалуйста, общайтесь уважительно. У меня нет всех сред для проверки каждого пакета, поэтому я могу гарантировать работу только Windows desktop-версии. Для других платформ тщательно проверяйте проблему перед созданием Issue. Спасибо всем, кто сообщает о проблемах на разных платформах и помогает с тестированием.
+      </sub>
+    </td>
+    <td valign="top" width="50%">
+      <strong>Отказ от ответственности</strong>
+      <br />
+      <sub>
+        Проект предназначен исключительно для обучения и разработки; пользователи обязаны соблюдать условия соответствующих платформ, включая OpenAI и Anthropic; автор не предоставляет и не распространяет аккаунты, API key или proxy-сервисы и не несёт ответственности за конкретные способы использования программы; не используйте проект для обхода ограничений скорости или сервиса.
+      </sub>
+    </td>
+  </tr>
+</table>
+
+## Каталог документации
 
 `docs/` — официальный каталог основной документации CodexManager.
 

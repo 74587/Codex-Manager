@@ -1,4 +1,72 @@
-# 문서 디렉터리 안내
+<table align="center">
+  <tr>
+    <td align="center" valign="middle" width="44%">
+      <img src="../../assets/logo/readme-header-ko.png" alt="CodexManager — 로컬 Codex 계정 풀 관리자" width="460" />
+      <br />
+      <sub>
+        <a href="https://qxnm.top/">공식 사이트</a> ·
+        <a href="#스폰서">스폰서</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="13%">
+      <sub>
+        <a href="../../README.md">中文</a>
+        <br />
+        <a href="../en/README.md">English</a>
+        <br />
+        <a href="../ru/README.md">Русский</a>
+        <br />
+        <strong>한국어</strong>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="23%">
+      <a href="https://github.com/qxcnm/Codex-Manager">
+        <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
+      </a>
+      <br />
+      <a href="https://atomgit.com/qxnm/Codex-Manager">
+        <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
+      </a>
+      <br />
+      <a href="https://gitee.com/hongshungao/Codex-Manager">
+        <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
+      </a>
+    </td>
+    <td align="center" valign="middle" width="20%">
+      <sub><strong>인정 커뮤니티</strong></sub>&nbsp;
+      <a href="https://linux.do/t/topic/1688401" title="LINUX DO">
+        <img src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png" alt="LINUX DO" height="30" />
+      </a>
+      &nbsp;
+      <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="쉬안우 커뮤니티">
+        <img src="https://xuanwu.openatom.org/logo.png" alt="쉬안우 커뮤니티" height="30" />
+      </a>
+    </td>
+  </tr>
+</table>
+
+**CodexManager는 [쉬안우 커뮤니티](https://xuanwu.openatom.org/articles/project/codex-manager/)에 합류했습니다.** 이 커뮤니티는 OpenAtom Foundation이 인큐베이팅하고 운영하는 Rust 기술 커뮤니티입니다.
+
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <strong>소스 코드 안내</strong>
+      <br />
+      <sub>
+        이 제품은 제가 지휘하고 AI의 도움을 받아 제작했습니다: Codex(98%), Gemini(2%). 문제가 발생하면 서로 존중하며 소통해 주세요. 모든 패키지를 검증할 수 있는 환경을 갖추지 못했기 때문에 Windows 데스크톱 버전만 사용 가능성을 보장합니다. 다른 플랫폼의 문제는 충분히 테스트한 뒤 Issue로 제출해 주세요. 플랫폼별 문제를 제보하고 테스트에 참여해 주신 모든 분께 감사드립니다.
+      </sub>
+    </td>
+    <td valign="top" width="50%">
+      <strong>면책 조항</strong>
+      <br />
+      <sub>
+        이 프로젝트는 학습과 개발 목적으로만 제공됩니다. 사용자는 OpenAI, Anthropic 등 관련 플랫폼의 서비스 약관을 준수해야 합니다. 작성자는 계정, API Key 또는 프록시 서비스를 제공하거나 배포하지 않으며 소프트웨어의 구체적인 사용 방식에 책임을 지지 않습니다. 속도 제한이나 서비스 제한을 우회하는 용도로 사용하지 마세요.
+      </sub>
+    </td>
+  </tr>
+</table>
+
+## 문서 디렉터리 안내
 
 `docs/`는 CodexManager의 공식 장문 문서 디렉터리입니다.
 

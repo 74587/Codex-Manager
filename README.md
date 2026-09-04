@@ -10,8 +10,12 @@
     </td>
     <td align="center" valign="middle" width="13%">
       <sub>
-        <a href="docs/en/README.md">English</a> ·
-        <a href="docs/ru/README.md">Русский</a> ·
+        <strong>中文</strong>
+        <br />
+        <a href="docs/en/README.md">English</a>
+        <br />
+        <a href="docs/ru/README.md">Русский</a>
+        <br />
         <a href="docs/ko/README.md">한국어</a>
       </sub>
     </td>
@@ -19,9 +23,11 @@
       <a href="https://github.com/qxcnm/Codex-Manager">
         <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
       </a>
+      <br />
       <a href="https://atomgit.com/qxnm/Codex-Manager">
         <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
       </a>
+      <br />
       <a href="https://gitee.com/hongshungao/Codex-Manager">
         <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
       </a>
@@ -41,15 +47,24 @@
 
 **CodexManager 已加入 [旋武社区](https://xuanwu.openatom.org/articles/project/codex-manager/)**，这是由开放原子开源基金会孵化运营的 Rust 技术社区。
 
-## 源码说明：
-> 本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。
-> 其次是本人没有足够的环境来验证每个包都有没有问题，本人也要上班(我只是个穷逼买不起mac之类的)，本人只保证win的桌面端的可用性，如果其他端有问题，请在充分测试后提交 Issues，有时间我自会处理
-> 最后感谢各位使用者反馈的各个平台问题和参与的部分测试。
-
-
-## 免责声明
-
-本项目仅用于学习与开发目的；使用者必须遵守相关平台的服务条款（例如 OpenAI、Anthropic）；作者不提供或分发任何账号、API Key 或代理服务，也不对本软件的具体使用方式负责；请勿使用本项目绕过速率限制或服务限制。
+<table>
+  <tr>
+    <td valign="top" width="50%">
+      <strong>源码说明</strong>
+      <br />
+      <sub>
+        本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。其次是本人没有足够的环境来验证每个包都有没有问题，本人也要上班(我只是个穷逼买不起mac之类的)，本人只保证win的桌面端的可用性，如果其他端有问题，请在充分测试后提交 Issues，有时间我自会处理。最后感谢各位使用者反馈的各个平台问题和参与的部分测试。
+      </sub>
+    </td>
+    <td valign="top" width="50%">
+      <strong>免责声明</strong>
+      <br />
+      <sub>
+        本项目仅用于学习与开发目的；使用者必须遵守相关平台的服务条款（例如 OpenAI、Anthropic）；作者不提供或分发任何账号、API Key 或代理服务，也不对本软件的具体使用方式负责；请勿使用本项目绕过速率限制或服务限制。
+      </sub>
+    </td>
+  </tr>
+</table>
 
 ## 赞助商
 
