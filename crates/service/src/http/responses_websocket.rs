@@ -34,9 +34,9 @@ use crate::storage_helpers::open_storage;
 mod responses_websocket_rebase;
 
 use responses_websocket_rebase::{
-    expand_response_create_previous_response, rebase_response_create_for_account_change,
-    rebase_response_create_for_missing_tool_call, CompletedWsResponseCache,
-    CompletedWsToolCallCache, WsToolCallKind,
+    expand_response_create_previous_response, normalize_ws_tool_call_outputs,
+    rebase_response_create_for_account_change, rebase_response_create_for_missing_tool_call,
+    CompletedWsResponseCache, CompletedWsToolCallCache, WsToolCallKind,
 };
 
 const RESPONSES_WS_ERROR_CODE: &str = "responses_websocket_error";
@@ -969,7 +969,10 @@ async fn run_responses_websocket_session(mut socket: WebSocket, context: WsReque
                                 &terminal,
                             );
                             let retry_result = if let Some(pending) = pending_request.as_mut() {
-                                if !pending.forwarded_upstream_event {
+                                if should_attempt_ws_terminal_retry(
+                                    terminal.status_code,
+                                    pending.forwarded_non_preamble_event,
+                                ) {
                                     try_retry_ws_request_after_terminal(
                                         &context,
                                         &mut upstream,
@@ -1647,6 +1650,18 @@ fn rewrite_client_frame(
     );
     if let Some(client_metadata) = merged_client_metadata {
         rewritten_object.insert("client_metadata".to_string(), client_metadata);
+    }
+
+    let duplicate_tool_outputs_dropped = rewritten_object
+        .get_mut("input")
+        .map(normalize_ws_tool_call_outputs)
+        .unwrap_or_default();
+    if duplicate_tool_outputs_dropped > 0 {
+        log::warn!(
+            "event=responses_ws_duplicate_tool_outputs_dropped count={} model={}",
+            duplicate_tool_outputs_dropped,
+            client_model_for_log.as_deref().unwrap_or("-")
+        );
     }
 
     let request: ResponseCreateWsRequest =
@@ -3481,6 +3496,10 @@ fn should_rotate_ws_upstream(status_code: u16) -> bool {
     matches!(status_code, 401 | 403 | 404 | 408 | 409 | 429)
 }
 
+fn should_attempt_ws_terminal_retry(status_code: u16, forwarded_non_preamble_event: bool) -> bool {
+    status_code != 200 && !forwarded_non_preamble_event
+}
+
 fn apply_ws_terminal_account_follow_up(account_id: &str, terminal: &WsTerminalEvent) {
     if !should_rotate_ws_upstream(terminal.status_code) {
         return;
@@ -3515,7 +3534,8 @@ async fn try_retry_ws_request_after_terminal(
     completed_responses: &CompletedWsResponseCache,
     completed_tool_calls: &CompletedWsToolCallCache,
 ) -> Result<bool, WsSessionError> {
-    if terminal.status_code == 200 || pending.forwarded_upstream_event {
+    if !should_attempt_ws_terminal_retry(terminal.status_code, pending.forwarded_non_preamble_event)
+    {
         return Ok(false);
     }
     let mut retry_text = None;

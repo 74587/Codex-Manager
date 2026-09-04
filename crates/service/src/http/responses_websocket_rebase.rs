@@ -285,6 +285,35 @@ fn normalize_ws_response_input(input: &Value) -> Vec<Value> {
     }
 }
 
+/// Drops repeated tool outputs for the same `(kind, call_id)` pair.
+///
+/// The Codex tool runner can emit a second `custom_tool_call_output` when a
+/// host-side progress notification is attached to the same custom tool call.
+/// Responses accepts one output item per tool call, so preserve the first
+/// output and remove later duplicates before forwarding the request upstream.
+pub(super) fn normalize_ws_tool_call_outputs(input: &mut Value) -> usize {
+    let Some(items) = input.as_array_mut() else {
+        return 0;
+    };
+
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::with_capacity(items.len());
+    let mut removed = 0;
+    for item in items.drain(..) {
+        let Some(key) = ws_tool_output_key(&item).ok().flatten() else {
+            normalized.push(item);
+            continue;
+        };
+        if seen.insert(key) {
+            normalized.push(item);
+        } else {
+            removed += 1;
+        }
+    }
+    *items = normalized;
+    removed
+}
+
 pub(super) fn expand_response_create_previous_response(
     text: &str,
     completed_responses: &CompletedWsResponseCache,

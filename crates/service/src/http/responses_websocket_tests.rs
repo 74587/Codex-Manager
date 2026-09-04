@@ -4,10 +4,10 @@ use super::{
     is_previous_response_not_found_terminal, merge_client_metadata,
     missing_ws_tool_call_from_terminal, parse_websocket_target, parse_ws_usage,
     prepare_missing_ws_tool_call_retry, proxy_basic_auth_header,
-    rebase_ws_request_for_account_change, rewrite_client_frame, should_buffer_ws_upstream_preamble,
-    strip_previous_response_id_from_ws_text, ws_request_has_tool_call_output,
-    ws_route_binding_for_frame, CompletedWsResponseCache, CompletedWsToolCallCache,
-    WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
+    rebase_ws_request_for_account_change, rewrite_client_frame, should_attempt_ws_terminal_retry,
+    should_buffer_ws_upstream_preamble, strip_previous_response_id_from_ws_text,
+    ws_request_has_tool_call_output, ws_route_binding_for_frame, CompletedWsResponseCache,
+    CompletedWsToolCallCache, WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
 };
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{
@@ -177,6 +177,70 @@ fn websocket_frame_applies_model_fast_policy() {
     let value: Value = serde_json::from_str(&prepared.text).expect("parse overridden model frame");
     assert_eq!(prepared.model.as_deref(), Some("gpt-5.4-mini"));
     assert!(value.get("service_tier").is_none());
+}
+
+#[test]
+fn websocket_frame_drops_duplicate_tool_outputs_but_keeps_distinct_calls() {
+    let _guard = crate::test_env_guard();
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers(None, None),
+        prompt_cache_key: None,
+        cache_affinity_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_duplicate",
+                "name": "exec",
+                "input": "{}"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_duplicate",
+                "output": [{ "type": "input_text", "text": "command result" }]
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_duplicate",
+                "output": "progress notification"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_function",
+                "output": "function result"
+            }
+        ]
+    });
+
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .expect("rewrite websocket frame");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse prepared frame");
+    let input = value["input"].as_array().expect("input array");
+
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+    assert_eq!(input[1]["output"][0]["text"], "command result");
+    assert_eq!(input[2]["type"], "function_call_output");
+    assert_eq!(prepared.input, value["input"]);
+}
+
+#[test]
+fn websocket_terminal_retry_ignores_preamble_but_stops_after_real_output() {
+    assert!(
+        should_attempt_ws_terminal_retry(400, false),
+        "a response preamble has no non-preamble event and must not consume the retry opportunity"
+    );
+    assert!(!should_attempt_ws_terminal_retry(400, true));
+    assert!(!should_attempt_ws_terminal_retry(200, false));
 }
 
 fn sample_account() -> Account {
