@@ -1,58 +1,43 @@
-<p align="center">
-  <img src="assets/logo/logo.png" alt="CodexManager Logo" width="220" />
-</p>
-
-<h1 align="center">CodexManager</h1>
-
-<p align="center">本地桌面端 + 服务进程的 Codex 账号管理器+网关转发</p>
-
-<p align="center">
-  <a href="docs/en/README.md">English</a>
-  ·
-  <a href="docs/ru/README.md">Русский</a>
-  ·
-  <a href="docs/ko/README.md">한국어</a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/qxcnm/Codex-Manager">
-    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
-  </a>
-  <a href="https://atomgit.com/qxnm/Codex-Manager">
-    <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
-  </a>
-  <a href="https://gitee.com/hongshungao/Codex-Manager">
-    <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://qxnm.top">官网</a>
-  ·
-  <a href="#赞助商">赞助商</a>
-</p>
-
-<p align="center"><strong>本地桌面端 + 服务进程的 Codex 账号池管理器</strong></p>
-<p align="center">统一管理账号、用量与平台 Key，并提供本地网关能力。</p>
-
-## 认可社区
-<p align="left">
-  <a href="https://linux.do/t/topic/1688401" title="LINUX DO">
-    <img
-      src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png"
-      alt="LINUX DO"
-      height="52"
-    />
-  </a>
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="旋武社区">
-    <img
-      src="https://xuanwu.openatom.org/logo.png"
-      alt="旋武社区"
-      height="52"
-    />
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center" valign="middle" width="44%">
+      <img src="assets/logo/readme-header.png" alt="CodexManager — 本地桌面端与服务进程的 Codex 账号池管理器" width="460" />
+      <br />
+      <sub>
+        <a href="https://qxnm.top/">官网</a> ·
+        <a href="#赞助商">赞助商</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="13%">
+      <sub>
+        <a href="docs/en/README.md">English</a> ·
+        <a href="docs/ru/README.md">Русский</a> ·
+        <a href="docs/ko/README.md">한국어</a>
+      </sub>
+    </td>
+    <td align="center" valign="middle" width="23%">
+      <a href="https://github.com/qxcnm/Codex-Manager">
+        <img alt="GitHub Stars" src="https://img.shields.io/github/stars/qxcnm/Codex-Manager?style=flat&logo=github&label=GitHub" height="20" />
+      </a>
+      <a href="https://atomgit.com/qxnm/Codex-Manager">
+        <img alt="AtomGit Stars" src="https://atomgit.com/qxnm/Codex-Manager/star/badge.svg" height="20" />
+      </a>
+      <a href="https://gitee.com/hongshungao/Codex-Manager">
+        <img alt="Gitee Stars" src="https://gitee.com/hongshungao/Codex-Manager/badge/star.svg?theme=dark" height="20" />
+      </a>
+    </td>
+    <td align="center" valign="middle" width="20%">
+      <sub><strong>认可社区</strong></sub>&nbsp;
+      <a href="https://linux.do/t/topic/1688401" title="LINUX DO">
+        <img src="https://cdn3.ldstatic.com/original/4X/d/1/4/d146c68151340881c884d95e0da4acdf369258c6.png" alt="LINUX DO" height="30" />
+      </a>
+      &nbsp;
+      <a href="https://xuanwu.openatom.org/articles/project/codex-manager/" title="旋武社区">
+        <img src="https://xuanwu.openatom.org/logo.png" alt="旋武社区" height="30" />
+      </a>
+    </td>
+  </tr>
+</table>
 
 **CodexManager 已加入 [旋武社区](https://xuanwu.openatom.org/articles/project/codex-manager/)**，这是由开放原子开源基金会孵化运营的 Rust 技术社区。
 
@@ -64,13 +49,7 @@
 
 ## 免责声明
 
-- 本项目仅用于学习与开发目的。
-
-- 使用者必须遵守相关平台的服务条款（例如 OpenAI、Anthropic）。
-
-- 作者不提供或分发任何账号、API Key 或代理服务，也不对本软件的具体使用方式负责。
-
-- 请勿使用本项目绕过速率限制或服务限制。
+本项目仅用于学习与开发目的；使用者必须遵守相关平台的服务条款（例如 OpenAI、Anthropic）；作者不提供或分发任何账号、API Key 或代理服务，也不对本软件的具体使用方式负责；请勿使用本项目绕过速率限制或服务限制。
 
 ## 赞助商
 
