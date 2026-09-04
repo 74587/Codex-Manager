@@ -74,11 +74,7 @@
 
 感谢以下朋友与伙伴对 CodexManager 的支持。
 
-<p align="center">
-  <a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">
-    <img src="assets/images/sponsors/patewayai-banner-cn-4k.png" alt="PatewayAI 官方高质量模型 API 中继服务" width="760" />
-  </a>
-</p>
+[![PatewayAI 官方高质量模型 API 中继服务](assets/images/sponsors/patewayai-banner-cn-4k.png)](https://pateway.ai/?ch=kimnmd)
 
 感谢 <strong>PatewayAI</strong> 对本项目的赞助！
 
@@ -86,17 +82,9 @@ PatewayAI 专注于官方高质量模型 API 中继，完整支持 Claude、Code
 
 经济模式低至 0.5 折！通过<a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">此链接</a>注册可获试用额度，还可参与不定时活动领取免费额度，双向推荐奖励最高达 150 美元。
 
+---
+
 <table>
-  <tr>
-    <td align="center" valign="middle" width="180">
-      <a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">
-        <img src="assets/images/sponsors/patewayai-logo-black-hd-3600.png" alt="PatewayAI" width="160" />
-      </a>
-    </td>
-    <td valign="top">
-      <strong><a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">PatewayAI</a></strong> 是一家面向资深 AI 开发者的 API 中继服务商，完整支持 Claude 与 Codex 系列模型。所有模型均来自官方高质量渠道，绝无稀释、绝无伪造，计费明细透明可查。经济模式低至 0.5 折，通过<a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">此链接</a>注册即可获得试用额度，还可参与不定时营销活动领取免费额度。平台同时支持企业级并发、专属管理后台、正式合同与发票，并提供最高 150 美元的双向推荐奖励。
-    </td>
-  </tr>
   <tr>
     <td align="center" valign="middle" width="180">
       <a href="https://vmcardio.com/zh/register?code=OPK6X2DSLW">
