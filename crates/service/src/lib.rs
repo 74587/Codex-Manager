@@ -43,6 +43,7 @@ pub(crate) use account::export as account_export;
 pub(crate) use account::group as account_group;
 pub(crate) use account::import as account_import;
 pub(crate) use account::list as account_list;
+pub(crate) use account::models as account_models;
 pub(crate) use account::plan as account_plan;
 pub(crate) use account::proxy as account_proxy;
 pub(crate) use account::proxy_testing::presets::proxy_test_presets;

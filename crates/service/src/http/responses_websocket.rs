@@ -1510,7 +1510,7 @@ fn apply_model_fast_policy_with_storage(
     let (body, applied) = crate::models_v2::fast_policy::apply(
         prepared.text.as_bytes().to_vec(),
         model.fast_policy,
-        prepared.has_service_tier_field,
+        prepared.raw_service_tier.as_deref(),
     )
     .map_err(|_| {
         WsSessionError::new(
@@ -1661,8 +1661,14 @@ fn rewrite_client_frame(
         .as_deref()
         .and_then(crate::apikey::service_tier::normalize_service_tier_for_log)
         .map(str::to_string);
-    let service_tier_source = resolve_ws_service_tier_source_for_log(
+    let effective_service_tier = crate::apikey::service_tier::recover_omitted_standard_tier_for_log(
+        effective_service_tier,
+        context.api_key.service_tier.as_deref(),
         explicit_service_tier_for_log.as_deref(),
+        false,
+    );
+    let service_tier_source = resolve_ws_service_tier_source_for_log(
+        service_tier_diagnostic.raw_value.as_deref(),
         effective_service_tier.as_deref(),
         context.api_key.service_tier.as_deref(),
     );
@@ -1718,7 +1724,11 @@ fn resolve_ws_service_tier_source_for_log(
     api_key_service_tier: Option<&str>,
 ) -> Option<String> {
     match (client_service_tier, effective_service_tier) {
-        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+        (Some(client), Some(effective))
+            if crate::apikey::service_tier::service_tier_request_matches_log_value(
+                client, effective,
+            ) =>
+        {
             Some("client_request".to_string())
         }
         (Some(_), Some(_)) => Some("gateway_override".to_string()),

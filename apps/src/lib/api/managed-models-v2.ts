@@ -95,7 +95,41 @@ function stringList(value: unknown): string[] {
 }
 
 function serviceTierName(id: string): string {
-  return id.toLowerCase() === "priority" ? "Fast" : id;
+  switch (id.toLowerCase()) {
+    case "priority":
+      return "Fast";
+    case "ultrafast":
+      return "Ultrafast";
+    case "flex":
+      return "Flex";
+    default:
+      return id;
+  }
+}
+
+function serviceTierDescription(modelSlug: string, id: string): string {
+  if (id.toLowerCase() === "priority") {
+    const normalizedSlug = modelSlug.toLowerCase();
+    if (normalizedSlug === "gpt-6-astra") {
+      return "2x speed, increased usage";
+    }
+    if (
+      new Set([
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+      ]).has(normalizedSlug)
+    ) {
+      return "1.5x speed, increased usage";
+    }
+    return "";
+  }
+  if (id.toLowerCase() === "ultrafast") {
+    return "The fastest available responses for latency-sensitive work.";
+  }
+  return "";
 }
 
 function booleanCapability(
@@ -154,7 +188,7 @@ export function managedModelV2ToModelInfo(model: ManagedModelV2): ModelInfo {
     serviceTiers: serviceTiers.map((id) => ({
       id,
       name: serviceTierName(id),
-      description: "",
+      description: serviceTierDescription(model.slug, id),
     })),
     defaultServiceTier: nullableString(
       capability(model, "defaultServiceTier", "default_service_tier"),

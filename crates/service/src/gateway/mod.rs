@@ -1045,6 +1045,10 @@ pub(crate) fn gateway_resolve_effective_upstream_base(
         .unwrap_or_else(resolve_upstream_base_url)
 }
 
+pub(crate) fn gateway_resolve_default_upstream_base_url() -> String {
+    resolve_upstream_base_url()
+}
+
 pub(crate) fn gateway_should_send_chatgpt_account_header(base: &str) -> bool {
     upstream::config::should_send_chatgpt_account_header(base)
 }

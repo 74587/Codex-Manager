@@ -317,4 +317,10 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
   "开始测试": "Start test",
   "启动测试失败": "Failed to start test",
   "预计删除": "Estimated delete",
+  "获取账号模型": "Fetch account models",
+  "账号展示方式": "Account view",
+  "列表视图": "List view",
+  "宫格视图": "Grid view",
+  "选择账号": "Select account",
+  "账号模型": "Account models",
 };

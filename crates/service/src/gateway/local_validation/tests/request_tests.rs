@@ -170,7 +170,7 @@ fn anthropic_key_maps_fast_service_tier_to_priority_on_adapted_responses_request
 }
 
 #[test]
-fn compat_service_tier_normalizer_maps_auto_to_priority() {
+fn compat_service_tier_normalizer_omits_auto_for_standard_codex_requests() {
     let body = serde_json::json!({
         "model": "gpt-5.3-codex",
         "input": [],
@@ -181,14 +181,102 @@ fn compat_service_tier_normalizer_maps_auto_to_priority() {
     );
     let payload: Value = serde_json::from_slice(&normalized).expect("json body");
 
+    assert!(payload.get("service_tier").is_none());
+}
+
+#[test]
+fn compat_service_tier_normalizer_preserves_ultrafast() {
+    let body = serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "input": [],
+        "service_tier": "UltraFast"
+    });
+    let normalized = normalize_compat_service_tier_for_codex_backend(
+        serde_json::to_vec(&body).expect("serialize request"),
+    );
+    let payload: Value = serde_json::from_slice(&normalized).expect("json body");
+
     assert_eq!(
         payload.get("service_tier").and_then(Value::as_str),
-        Some("priority")
+        Some("ultrafast")
     );
 }
 
 #[test]
-fn anthropic_key_ignores_unsupported_flex_service_tier_on_responses_request() {
+fn omitted_default_override_is_logged_as_standard() {
+    let effective = crate::apikey::service_tier::recover_omitted_standard_tier_for_log(
+        None,
+        Some("default"),
+        Some("ultrafast"),
+        false,
+    );
+    let source = resolve_service_tier_source_for_log(
+        Some("ultrafast"),
+        effective.as_deref(),
+        Some("default"),
+    );
+
+    assert_eq!(effective.as_deref(), Some("standard"));
+    assert_eq!(source.as_deref(), Some("gateway_override"));
+}
+
+#[test]
+fn auto_is_not_misreported_as_fast() {
+    let source = resolve_service_tier_source_for_log(Some("auto"), Some("fast"), None);
+    assert_eq!(source.as_deref(), Some("gateway_override"));
+}
+
+#[test]
+fn http_block_policy_only_rejects_fast_request_tiers() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("read managed model")
+        .expect("managed model");
+    model.fast_policy = codexmanager_core::storage::ModelFastPolicyV2::Block;
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some("gpt-5.4-mini".to_string()),
+            model,
+        })
+        .expect("update block policy");
+
+    for tier in ["fast", "priority"] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": "gpt-5.4-mini",
+            "input": "hello",
+            "service_tier": tier
+        }))
+        .expect("serialize request");
+        let err = apply_model_fast_policy(&storage, Some("gpt-5.4-mini"), body, Some(tier))
+            .expect_err("Fast request tier must be blocked");
+        assert_eq!(err.status_code, 400, "unexpected status for tier {tier}");
+    }
+
+    for tier in ["auto", "default", "flex", "ultrafast"] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": "gpt-5.4-mini",
+            "input": "hello",
+            "service_tier": tier
+        }))
+        .expect("serialize request");
+        let (body, applied) =
+            match apply_model_fast_policy(&storage, Some("gpt-5.4-mini"), body, Some(tier)) {
+                Ok(result) => result,
+                Err(err) => panic!("non-Fast tier {tier} was rejected: {}", err.message),
+            };
+        let payload: Value = serde_json::from_slice(&body).expect("parse request");
+        assert!(!applied, "Block policy must not rewrite tier {tier}");
+        assert_eq!(
+            payload.get("service_tier").and_then(Value::as_str),
+            Some(tier)
+        );
+    }
+}
+
+#[test]
+fn anthropic_key_preserves_flex_service_tier_on_responses_request() {
     let api_key = sample_api_key(
         crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
         Some("gpt-5.3-codex"),
@@ -220,7 +308,10 @@ fn anthropic_key_ignores_unsupported_flex_service_tier_on_responses_request() {
     );
     let payload: Value = serde_json::from_slice(&rewritten).expect("json body");
 
-    assert!(payload.get("service_tier").is_none());
+    assert_eq!(
+        payload.get("service_tier").and_then(Value::as_str),
+        Some("flex")
+    );
 }
 
 /// 函数 `openai_key_keeps_empty_overrides`

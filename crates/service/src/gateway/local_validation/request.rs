@@ -122,7 +122,7 @@ fn apply_model_fast_policy(
     storage: &codexmanager_core::storage::Storage,
     model_slug: Option<&str>,
     body: Vec<u8>,
-    client_has_service_tier: bool,
+    client_service_tier: Option<&str>,
 ) -> Result<(Vec<u8>, bool), LocalValidationError> {
     let Some(model_slug) = model_slug.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok((body, false));
@@ -133,7 +133,7 @@ fn apply_model_fast_policy(
             LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
         })?
         .ok_or_else(|| LocalValidationError::new(404, format!("model_not_found: {model_slug}")))?;
-    crate::models_v2::fast_policy::apply(body, model.fast_policy, client_has_service_tier).map_err(
+    crate::models_v2::fast_policy::apply(body, model.fast_policy, client_service_tier).map_err(
         |_| {
             LocalValidationError::new(
                 400,
@@ -1424,11 +1424,12 @@ fn normalize_compat_service_tier_for_codex_backend(body: Vec<u8>) -> Vec<u8> {
         return body;
     };
 
-    if raw_value.eq_ignore_ascii_case("auto")
-        || raw_value.eq_ignore_ascii_case("fast")
-        || raw_value.eq_ignore_ascii_case("priority")
-    {
+    if raw_value.eq_ignore_ascii_case("fast") || raw_value.eq_ignore_ascii_case("priority") {
         *service_tier = serde_json::Value::String("priority".to_string());
+    } else if raw_value.eq_ignore_ascii_case("flex") {
+        *service_tier = serde_json::Value::String("flex".to_string());
+    } else if raw_value.eq_ignore_ascii_case("ultrafast") {
+        *service_tier = serde_json::Value::String("ultrafast".to_string());
     } else {
         obj.remove("service_tier");
     }
@@ -1442,7 +1443,11 @@ fn resolve_service_tier_source_for_log(
     api_key_service_tier: Option<&str>,
 ) -> Option<String> {
     match (client_service_tier, effective_service_tier) {
-        (Some(client), Some(effective)) if client.eq_ignore_ascii_case(effective) => {
+        (Some(client), Some(effective))
+            if crate::apikey::service_tier::service_tier_request_matches_log_value(
+                client, effective,
+            ) =>
+        {
             Some("client_request".to_string())
         }
         (Some(_), Some(_)) => Some("gateway_override".to_string()),
@@ -1996,7 +2001,7 @@ pub(super) fn build_local_validation_result(
             &storage,
             model_for_log.as_deref(),
             rewritten_body,
-            initial_service_tier_diagnostic.has_field,
+            initial_service_tier_diagnostic.raw_value.as_deref(),
         )?;
         rewritten_body = next_body;
         let effective_service_tier_for_log =
@@ -2004,11 +2009,18 @@ pub(super) fn build_local_validation_result(
                 .as_ref()
                 .map(super::super::parse_request_metadata_from_value)
                 .and_then(|metadata| metadata.service_tier);
+        let effective_service_tier_for_log =
+            crate::apikey::service_tier::recover_omitted_standard_tier_for_log(
+                effective_service_tier_for_log,
+                api_key.service_tier.as_deref(),
+                service_tier_for_log.as_deref(),
+                fast_policy_applied,
+            );
         let service_tier_source_for_log = if fast_policy_applied {
             Some("model_policy".to_string())
         } else {
             resolve_service_tier_source_for_log(
-                service_tier_for_log.as_deref(),
+                initial_service_tier_diagnostic.raw_value.as_deref(),
                 effective_service_tier_for_log.as_deref(),
                 api_key.service_tier.as_deref(),
             )
@@ -2106,7 +2118,7 @@ pub(super) fn build_local_validation_result(
         &storage,
         passthrough_model_for_policy,
         passthrough_body,
-        initial_service_tier_diagnostic.has_field,
+        initial_service_tier_diagnostic.raw_value.as_deref(),
     )?
     .0;
     let mut passthrough_body_value_for_validation = None;
@@ -2375,7 +2387,7 @@ pub(super) fn build_local_validation_result(
         &storage,
         instruction_model,
         body,
-        initial_service_tier_diagnostic.has_field,
+        initial_service_tier_diagnostic.raw_value.as_deref(),
     )?;
     body = next_body;
     if should_normalize_compat_service_tier {
@@ -2416,12 +2428,18 @@ pub(super) fn build_local_validation_result(
         api_key.reasoning_effort.as_deref(),
     );
     let service_tier_for_log = client_request_meta.service_tier;
-    let effective_service_tier_for_log = request_meta.service_tier;
+    let effective_service_tier_for_log =
+        crate::apikey::service_tier::recover_omitted_standard_tier_for_log(
+            request_meta.service_tier,
+            api_key.service_tier.as_deref(),
+            service_tier_for_log.as_deref(),
+            fast_policy_applied,
+        );
     let service_tier_source_for_log = if fast_policy_applied {
         Some("model_policy".to_string())
     } else {
         resolve_service_tier_source_for_log(
-            service_tier_for_log.as_deref(),
+            initial_service_tier_diagnostic.raw_value.as_deref(),
             effective_service_tier_for_log.as_deref(),
             api_key.service_tier.as_deref(),
         )

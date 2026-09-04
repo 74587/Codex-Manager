@@ -151,8 +151,37 @@ pub(crate) fn ensure_text_generation_model(
 fn service_tier_display_name(id: &str) -> &str {
     if id.eq_ignore_ascii_case("priority") {
         "Fast"
+    } else if id.eq_ignore_ascii_case("ultrafast") {
+        "Ultrafast"
+    } else if id.eq_ignore_ascii_case("flex") {
+        "Flex"
     } else {
         id
+    }
+}
+
+fn service_tier_description(model_slug: &str, id: &str) -> &'static str {
+    if id.eq_ignore_ascii_case("priority") {
+        if model_slug.eq_ignore_ascii_case("gpt-6-astra") {
+            "2x speed, increased usage"
+        } else if [
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ]
+        .iter()
+        .any(|known_slug| model_slug.eq_ignore_ascii_case(known_slug))
+        {
+            "1.5x speed, increased usage"
+        } else {
+            ""
+        }
+    } else if id.eq_ignore_ascii_case("ultrafast") {
+        "The fastest available responses for latency-sensitive work."
+    } else {
+        ""
     }
 }
 
@@ -182,6 +211,7 @@ pub(crate) fn model_info(model: &ManagedModelV2) -> ModelInfo {
         .into_iter()
         .map(|id| ModelServiceTier {
             name: service_tier_display_name(&id).to_string(),
+            description: service_tier_description(model.slug.as_str(), &id).to_string(),
             id,
             ..Default::default()
         })
@@ -429,10 +459,10 @@ mod tests {
     #[test]
     fn model_info_exposes_fast_service_tier_for_codex_clients() {
         let model = ManagedModelV2 {
-            slug: "fast-model".to_string(),
+            slug: "gpt-5.6-sol".to_string(),
             display_name: "Fast Model".to_string(),
             capabilities: serde_json::json!({
-                "service_tiers": ["priority", "flex"],
+                "service_tiers": ["priority", "ultrafast", "flex"],
                 "additional_speed_tiers": ["fast"],
                 "default_service_tier": "priority"
             }),
@@ -442,11 +472,48 @@ mod tests {
         let info = model_info(&model);
         assert_eq!(info.additional_speed_tiers, ["fast"]);
         assert_eq!(info.default_service_tier.as_deref(), Some("priority"));
-        assert_eq!(info.service_tiers.len(), 2);
+        assert_eq!(info.service_tiers.len(), 3);
         assert_eq!(info.service_tiers[0].id, "priority");
         assert_eq!(info.service_tiers[0].name, "Fast");
-        assert_eq!(info.service_tiers[1].id, "flex");
-        assert_eq!(info.service_tiers[1].name, "flex");
+        assert_eq!(
+            info.service_tiers[0].description,
+            "1.5x speed, increased usage"
+        );
+        assert_eq!(info.service_tiers[1].id, "ultrafast");
+        assert_eq!(info.service_tiers[1].name, "Ultrafast");
+        assert_eq!(
+            info.service_tiers[1].description,
+            "The fastest available responses for latency-sensitive work."
+        );
+        assert_eq!(info.service_tiers[2].id, "flex");
+        assert_eq!(info.service_tiers[2].name, "Flex");
+    }
+
+    #[test]
+    fn astra_fast_service_tier_uses_catalog_usage_copy() {
+        let model = ManagedModelV2 {
+            slug: "gpt-6-astra".to_string(),
+            capabilities: serde_json::json!({ "service_tiers": ["priority"] }),
+            ..Default::default()
+        };
+
+        let info = model_info(&model);
+        assert_eq!(
+            info.service_tiers[0].description,
+            "2x speed, increased usage"
+        );
+    }
+
+    #[test]
+    fn custom_model_fast_service_tier_does_not_invent_a_speed_claim() {
+        let model = ManagedModelV2 {
+            slug: "custom-fast-model".to_string(),
+            capabilities: serde_json::json!({ "service_tiers": ["priority"] }),
+            ..Default::default()
+        };
+
+        let info = model_info(&model);
+        assert_eq!(info.service_tiers[0].description, "");
     }
 
     #[test]

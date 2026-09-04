@@ -66,12 +66,19 @@ const REASONING_LABELS: Record<string, string> = {
 
 const SERVICE_TIER_LABELS: Record<string, string> = {
   auto: "跟随请求",
-  fast: "Fast",
+  default: "标准 (Standard)",
+  fast: "快速 (Fast)",
+  ultrafast: "超快 (Ultrafast)",
+  flex: "弹性 (Flex)",
 };
 
 function normalizeEditableServiceTier(value?: string | null): string {
   const normalized = String(value || "").trim().toLowerCase();
-  return normalized === "fast" ? "fast" : "";
+  if (normalized === "standard") return "default";
+  if (normalized === "priority") return "fast";
+  return ["default", "fast", "ultrafast", "flex"].includes(normalized)
+    ? normalized
+    : "";
 }
 
 const ROTATION_STRATEGY_LABELS: Record<string, string> = {
@@ -826,12 +833,15 @@ export function ApiKeyModal({
                 <SelectContent align="start">
                     <SelectGroup>
                   <SelectItem value="auto">{t("跟随请求")}</SelectItem>
-                  <SelectItem value="fast">Fast</SelectItem>
+                  <SelectItem value="default">{t("标准 (Standard)")}</SelectItem>
+                  <SelectItem value="fast">{t("快速 (Fast)")}</SelectItem>
+                  <SelectItem value="ultrafast">{t("超快 (Ultrafast)")}</SelectItem>
+                  <SelectItem value="flex">{t("弹性 (Flex)")}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                {t("Fast 会映射为上游 priority；未设置时跟随请求。")}
+                {t("Standard 会强制标准速度；Fast 会映射为上游 priority；Ultrafast 与 Flex 会按原值透传，是否可用取决于模型和上游；未设置时跟随请求。")}
               </p>
             </div>
           </div>

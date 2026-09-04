@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAccounts } from "@/hooks/useAccounts";
 import {
@@ -31,8 +32,11 @@ import {
   type StatusFilter,
 } from "@/app/accounts/accounts-page-helpers";
 import { AccountsPageView } from "@/app/accounts/accounts-page-view";
+import { AggregateApiModelAssociationModal } from "@/components/modals/aggregate-api-model-association-modal";
 import { isBannedAccount, isLimitedAccount } from "@/lib/utils/usage";
-import type { Account, ProxyProfile } from "@/types";
+import { accountClient } from "@/lib/api/account-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
+import type { Account, AccountFetchedModel, ProxyProfile } from "@/types";
 
 type CleanupStatus =
   | "unavailable"
@@ -68,12 +72,14 @@ function canBulkDisableAccount(account: Account): boolean {
 
 export default function AccountsPage() {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const { isDesktopRuntime, canUseBrowserDownloadExport } =
     useRuntimeCapabilities();
   const { data: session, isLoading: isSessionLoading } = useAppSession();
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
   const canTestAccounts =
     isDesktopRuntime || (!isSessionLoading && isAdminRole(role));
+  const canManageAccountModels = canTestAccounts;
   const {
     accounts,
     planTypes,
@@ -157,6 +163,15 @@ export default function AccountsPage() {
   );
   const [accountTestAccountSnapshot, setAccountTestAccountSnapshot] =
     useState<Account | null>(null);
+  const [modelAssociationAccount, setModelAssociationAccount] =
+    useState<Account | null>(null);
+  const [modelAssociationItems, setModelAssociationItems] = useState<
+    AccountFetchedModel[]
+  >([]);
+  const [fetchingModelsAccountId, setFetchingModelsAccountId] = useState<
+    string | null
+  >(null);
+  const [isAssociatingModels, setIsAssociatingModels] = useState(false);
   // 从最新账号列表派生弹窗里的账号，测试结束后状态徽章可自动刷新；
   // 列表短暂重取时回退到快照，避免弹窗闪烁关闭。
   const accountTestAccount = useMemo(
@@ -399,6 +414,65 @@ export default function AccountsPage() {
   const openUsage = (account: Account) => {
     setSelectedAccountId(account.id);
     setUsageModalOpen(true);
+  };
+
+  const openModelAssociation = async (account: Account) => {
+    setFetchingModelsAccountId(account.id);
+    try {
+      const result = await accountClient.fetchAccountModels(account.id);
+      setModelAssociationAccount(account);
+      setModelAssociationItems(result.items);
+    } catch (error) {
+      toast.error(`${t("拉取模型失败")}: ${getAppErrorMessage(error)}`);
+    } finally {
+      setFetchingModelsAccountId(null);
+    }
+  };
+
+  const handleModelAssociationOpenChange = (open: boolean) => {
+    if (!open && !isAssociatingModels) {
+      setModelAssociationAccount(null);
+      setModelAssociationItems([]);
+    }
+  };
+
+  const associateAccountModels = async (upstreamModels: string[]) => {
+    if (!modelAssociationAccount) return;
+    setIsAssociatingModels(true);
+    try {
+      const selected = new Set(upstreamModels);
+      const displayNames = Object.fromEntries(
+        modelAssociationItems
+          .filter((item) => selected.has(item.upstreamModel) && item.displayName)
+          .map((item) => [item.upstreamModel, item.displayName as string]),
+      );
+      const result = await accountClient.associateAccountModels(
+        modelAssociationAccount.id,
+        upstreamModels,
+        displayNames,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
+        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
+      ]);
+      toast.success(
+        t(
+          "关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}",
+          {
+            created: result.createdModels.length,
+            added: result.addedRoutes.length,
+            unchanged: result.unchangedRoutes.length,
+          },
+        ),
+      );
+      setModelAssociationAccount(null);
+      setModelAssociationItems([]);
+    } catch (error) {
+      toast.error(`${t("关联模型失败")}: ${getAppErrorMessage(error)}`);
+    } finally {
+      setIsAssociatingModels(false);
+    }
   };
 
   const handleUsageModalOpenChange = (open: boolean) => {
@@ -908,6 +982,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
   };
 
   return (
+    <>
     <AccountsPageView
       accounts={accounts}
       planTypes={planTypes}
@@ -942,6 +1017,9 @@ const toggleCleanupStatus = (rawStatus: string) => {
       proxySettings={proxySettings}
       proxyProfiles={proxyProfiles}
       canTestAccounts={canTestAccounts}
+      canManageAccountModels={canManageAccountModels}
+      fetchingModelsAccountId={fetchingModelsAccountId}
+      openModelAssociation={openModelAssociation}
       accountTestAccount={accountTestAccount}
       isProxySettingsLoading={isProxySettingsLoading}
       proxyEnabledDraft={proxyEnabledDraft}
@@ -1040,5 +1118,14 @@ const toggleCleanupStatus = (rawStatus: string) => {
       toggleForceEnabled={handleToggleForceEnabled}
       toggleAccountStatus={toggleAccountStatus}
     />
+      <AggregateApiModelAssociationModal
+        open={isPageActive && Boolean(modelAssociationAccount)}
+        onOpenChange={handleModelAssociationOpenChange}
+        sourceName={modelAssociationAccount?.name || t("账号模型")}
+        items={modelAssociationItems}
+        isSaving={isAssociatingModels}
+        onAssociate={associateAccountModels}
+      />
+    </>
   );
 }

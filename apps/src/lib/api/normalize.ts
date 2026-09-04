@@ -4,6 +4,8 @@ import { normalizeAccountProxySummaryFields } from "./account-proxy-normalize";
 
 import {
   Account,
+  AccountFetchedModel,
+  AccountFetchModelsResult,
   AccountListResult,
   AccountUsage,
   AggregateApi,
@@ -1020,6 +1022,27 @@ export function normalizeAggregateApiFetchModelsResult(
   return {
     apiId: asString(source.apiId ?? source.api_id),
     providerType: asString(source.providerType ?? source.provider_type),
+    fetchedAt: asInteger(source.fetchedAt ?? source.fetched_at, 0, 0),
+    items,
+  };
+}
+
+export function normalizeAccountFetchModelsResult(
+  payload: unknown,
+): AccountFetchModelsResult {
+  const source = asObject(payload);
+  const items = asArray(source.items).map((item): AccountFetchedModel => {
+    const value = asObject(item);
+    return {
+      upstreamModel: asString(value.upstreamModel ?? value.upstream_model),
+      displayName: asString(value.displayName ?? value.display_name) || null,
+      existingModelSlug:
+        asString(value.existingModelSlug ?? value.existing_model_slug) || null,
+      alreadyLinked: asBoolean(value.alreadyLinked ?? value.already_linked, false),
+    };
+  });
+  return {
+    accountId: asString(source.accountId ?? source.account_id),
     fetchedAt: asInteger(source.fetchedAt ?? source.fetched_at, 0, 0),
     items,
   };

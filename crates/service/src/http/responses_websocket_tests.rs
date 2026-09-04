@@ -62,6 +62,12 @@ fn websocket_frame_applies_model_fast_policy() {
             Some("client_request"),
         ),
         (
+            ModelFastPolicyV2::Passthrough,
+            Some("ultrafast"),
+            Some("ultrafast"),
+            Some("client_request"),
+        ),
+        (
             ModelFastPolicyV2::Filter,
             Some("fast"),
             None,
@@ -124,20 +130,62 @@ fn websocket_frame_applies_model_fast_policy() {
             model,
         })
         .expect("update block policy");
-    let prepared = rewrite_client_frame(
-        r#"{"type":"response.create","model":"gpt-5.4","input":"hello","service_tier":"fast"}"#,
-        &context,
-    )
-    .expect("rewrite blocked frame");
-    let err = match apply_model_fast_policy_with_storage(prepared, &storage) {
-        Ok(_) => panic!("block policy must reject explicit fast request"),
-        Err(err) => err,
-    };
-    assert_eq!(err.status, 400);
-    assert_eq!(
-        err.code,
-        crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED
-    );
+    for tier in ["fast", "priority"] {
+        let frame = json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": "hello",
+            "service_tier": tier
+        });
+        let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+            .expect("rewrite blocked frame");
+        assert_eq!(
+            prepared.service_tier_source.as_deref(),
+            Some("client_request"),
+            "tier {tier} must retain its client source before policy evaluation"
+        );
+        let err = match apply_model_fast_policy_with_storage(prepared, &storage) {
+            Ok(_) => panic!("block policy must reject explicit Fast tier {tier}"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status, 400);
+        assert_eq!(
+            err.code,
+            crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED
+        );
+    }
+
+    for (tier, expected_upstream_tier, expected_log_tier) in [
+        ("auto", None, None),
+        ("default", None, Some("standard")),
+        ("flex", Some("flex"), Some("flex")),
+        ("ultrafast", Some("ultrafast"), Some("ultrafast")),
+    ] {
+        let frame = json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": "hello",
+            "service_tier": tier
+        });
+        let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+            .expect("rewrite non-Fast frame");
+        let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+            .expect("block policy must allow non-Fast tier");
+        let value: Value = serde_json::from_str(&prepared.text).expect("parse allowed frame");
+        assert_eq!(
+            value.get("service_tier").and_then(Value::as_str),
+            expected_upstream_tier,
+            "unexpected upstream tier for {tier}"
+        );
+        assert_eq!(
+            prepared.effective_service_tier.as_deref(),
+            expected_log_tier
+        );
+        assert_eq!(
+            prepared.service_tier_source.as_deref(),
+            Some("client_request")
+        );
+    }
 
     let mut api_key_fast_context = context.clone();
     api_key_fast_context.api_key.service_tier = Some("fast".to_string());
@@ -152,6 +200,37 @@ fn websocket_frame_applies_model_fast_policy() {
     assert_eq!(
         value.get("service_tier").and_then(Value::as_str),
         Some("priority")
+    );
+
+    let mut api_key_ultrafast_context = context.clone();
+    api_key_ultrafast_context.api_key.service_tier = Some("ultrafast".to_string());
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.4","input":"hello"}"#,
+        &api_key_ultrafast_context,
+    )
+    .expect("rewrite API key ultrafast frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("block policy must allow API key injected ultrafast tier");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse API key ultrafast frame");
+    assert_eq!(
+        value.get("service_tier").and_then(Value::as_str),
+        Some("ultrafast")
+    );
+
+    let mut api_key_standard_context = context.clone();
+    api_key_standard_context.api_key.service_tier = Some("default".to_string());
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.6-sol","input":"hello","service_tier":"ultrafast"}"#,
+        &api_key_standard_context,
+    )
+    .expect("rewrite API key standard frame");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse API key standard frame");
+    assert!(value.get("service_tier").is_none());
+    assert_eq!(prepared.service_tier.as_deref(), Some("ultrafast"));
+    assert_eq!(prepared.effective_service_tier.as_deref(), Some("standard"));
+    assert_eq!(
+        prepared.service_tier_source.as_deref(),
+        Some("gateway_override")
     );
 
     let mut overridden_model = storage

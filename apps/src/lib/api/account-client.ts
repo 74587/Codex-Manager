@@ -5,6 +5,7 @@ import {
 } from "./api-key-update-payload";
 import {
   normalizeAccountList,
+  normalizeAccountFetchModelsResult,
   normalizeAggregateApiBalanceRefreshResult,
   normalizeAggregateApiAssociateModelsResult,
   normalizeAggregateApiCreateResult,
@@ -63,6 +64,7 @@ import {
 import { unwrapUsageSnapshotPayload } from "./usage-response";
 import {
   AccountListResult,
+  AccountFetchModelsResult,
   AccountUsage,
   AggregateApi,
   AggregateApiAssociateModelsResult,
@@ -421,6 +423,28 @@ export const accountClient = {
   async list(): Promise<AccountListResult> {
     const result = await invoke<unknown>("service_account_list", withAddr());
     return normalizeAccountList(result);
+  },
+  async fetchAccountModels(accountId: string): Promise<AccountFetchModelsResult> {
+    const result = await invoke<unknown>(
+      "service_account_fetch_models",
+      withAddr({ accountId }),
+    );
+    return normalizeAccountFetchModelsResult(result);
+  },
+  async associateAccountModels(
+    accountId: string,
+    upstreamModels: string[],
+    displayNames?: Record<string, string>,
+  ): Promise<AggregateApiAssociateModelsResult> {
+    const result = await invoke<unknown>(
+      "service_account_associate_models",
+      withAddr({
+        accountId,
+        upstreamModels,
+        displayNames: displayNames || null,
+      }),
+    );
+    return normalizeAggregateApiAssociateModelsResult(result);
   },
   delete: (accountId: string) =>
     invoke("service_account_delete", withAddr({ accountId })),
