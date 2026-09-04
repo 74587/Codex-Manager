@@ -127,7 +127,29 @@ CodexManager is a local desktop + service-process account pool manager and gatew
 
 Thanks to the following sponsors for supporting CodexManager.
 
+<p align="center">
+  <a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">
+    <img src="../../assets/images/sponsors/patewayai-banner-en-4k.png" alt="PatewayAI official high-quality model API relay service" width="760" />
+  </a>
+</p>
+
+Thanks to <strong>PatewayAI</strong> for sponsoring this project!
+
+PatewayAI focuses on high-quality official model API relay services, with full support for Claude and Codex series models, transparent billing, and enterprise-grade service.
+
+Economy mode starts as low as 5% of standard rates. <a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">Register through this link</a> to receive trial credits, join occasional promotions for free credits, and earn up to $150 in two-way referral rewards.
+
 <table>
+  <tr>
+    <td align="center" valign="middle" width="180">
+      <a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">
+        <img src="../../assets/images/sponsors/patewayai-logo-black-hd-3600.png" alt="PatewayAI" width="160" />
+      </a>
+    </td>
+    <td valign="top">
+      <strong><a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">PatewayAI</a></strong> is an API relay provider for experienced AI developers, with full support for Claude and Codex series models. All models come from high-quality official channels, with no dilution or counterfeits and transparent, auditable billing. Economy mode starts as low as 5% of standard rates. <a href="https://pateway.ai/?ch=kimnmd" rel="sponsored nofollow">Register through this link</a> to receive trial credits and join occasional promotions for free credits. The platform also supports enterprise concurrency, a dedicated admin console, formal contracts and invoices, and two-way referral rewards of up to $150.
+    </td>
+  </tr>
   <tr>
     <td align="center" valign="middle" width="180">
       <a href="https://www.aixiamo.com/?utm_source=github&utm_medium=sponsor&utm_campaign=codex_manager">
