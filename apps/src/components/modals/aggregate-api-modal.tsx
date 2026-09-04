@@ -90,6 +90,7 @@ interface AggregateApiModalProps {
   onOpenChange: (open: boolean) => void;
   aggregateApi?: AggregateApi | null;
   defaultSort?: number;
+  serviceAddr: string | null;
 }
 
 /**
@@ -110,6 +111,7 @@ export function AggregateApiModal({
   onOpenChange,
   aggregateApi,
   defaultSort = 0,
+  serviceAddr,
 }: AggregateApiModalProps) {
   const { t } = useI18n();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
@@ -433,10 +435,12 @@ export function AggregateApiModal({
           balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
           balanceQueryUserId: balanceQueryUserId.trim(),
           balanceQueryConfigJson,
-        });
+        }, serviceAddr);
         toast.success(t("聚合 API 已更新"));
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+          queryClient.invalidateQueries({
+            queryKey: ["aggregate-apis", "list", serviceAddr],
+          }),
           queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
           queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
           queryClient.invalidateQueries({ queryKey: ["quota"] }),
@@ -464,11 +468,13 @@ export function AggregateApiModal({
         balanceQueryAccessToken: balanceQueryAccessToken.trim() || null,
         balanceQueryUserId: balanceQueryUserId.trim(),
         balanceQueryConfigJson,
-      });
+      }, serviceAddr);
       setGeneratedKey(result.key);
       toast.success(t("聚合 API 已创建"));
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["aggregate-apis", "list", serviceAddr],
+        }),
         queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
         queryClient.invalidateQueries({ queryKey: ["quota"] }),

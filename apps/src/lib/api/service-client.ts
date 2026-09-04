@@ -146,14 +146,18 @@ export const serviceClient = {
     );
     return normalizeRequestLogListResult(result);
   },
-  async listRequestLogsWithSummary(params?: {
-    query?: string;
-    statusFilter?: string;
-    page?: number;
-    pageSize?: number;
-    startTs?: number | null;
-    endTs?: number | null;
-  }, options?: RequestOptions): Promise<RequestLogListWithSummaryResult> {
+  async listRequestLogsWithSummary(
+    params?: {
+      query?: string;
+      statusFilter?: string;
+      page?: number;
+      pageSize?: number;
+      startTs?: number | null;
+      endTs?: number | null;
+    },
+    options?: RequestOptions,
+    addr?: string | null,
+  ): Promise<RequestLogListWithSummaryResult> {
     const result = await invoke<unknown>(
       "service_requestlog_list_with_summary",
       withAddr({
@@ -163,6 +167,7 @@ export const serviceClient = {
         pageSize: params?.pageSize ?? 20,
         startTs: params?.startTs ?? null,
         endTs: params?.endTs ?? null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
       }),
       options
     );
@@ -185,7 +190,11 @@ export const serviceClient = {
     );
     return normalizeRequestLogFilterSummary(result);
   },
-  clearRequestLogs: () => invoke("service_requestlog_clear", withAddr()),
+  clearRequestLogs: (addr?: string | null) =>
+    invoke(
+      "service_requestlog_clear",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    ),
   async getTodaySummary(params?: {
     dayStartTs?: number;
     dayEndTs?: number;

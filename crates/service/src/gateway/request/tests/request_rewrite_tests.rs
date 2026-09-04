@@ -412,6 +412,47 @@ fn responses_overrides_model_and_reasoning_effort() {
 }
 
 #[test]
+fn responses_preserves_explicit_reserve_alias_against_platform_model_override() {
+    let body = json!({
+        "model": "gpt-reserve",
+        "reasoning": { "effort": "low" },
+        "input": "hello"
+    });
+    let out = apply_request_overrides_with_service_tier(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        Some("gpt-5.6-luna"),
+        Some("high"),
+        Some("flex"),
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["model"], "gpt-reserve");
+    assert_eq!(value["reasoning"]["effort"], "high");
+    assert_eq!(value["service_tier"], "flex");
+}
+
+#[test]
+fn responses_bound_non_luna_model_still_overrides_reserve_alias() {
+    let body = json!({
+        "model": "gpt-reserve",
+        "input": "hello"
+    });
+    let out = apply_request_overrides_with_service_tier(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        Some("gpt-5.4"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["model"], "gpt-5.4");
+}
+
+#[test]
 fn responses_maps_client_ultra_to_upstream_max_without_an_api_key_override() {
     let body = json!({
         "model": "gpt-5.6-sol",

@@ -52,6 +52,17 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(luna.cached_input_price_per_1m, 0.02);
     assert_close(luna.cache_write_price_per_1m, 0.25);
     assert_close(luna.output_price_per_1m, 1.2);
+    let reserve = resolve_model_price_from_catalog(&prices, "gpt-reserve", 0).expect("reserve");
+    assert_close(reserve.input_price_per_1m, luna.input_price_per_1m);
+    assert_close(
+        reserve.cached_input_price_per_1m,
+        luna.cached_input_price_per_1m,
+    );
+    assert_close(
+        reserve.cache_write_price_per_1m,
+        luna.cache_write_price_per_1m,
+    );
+    assert_close(reserve.output_price_per_1m, luna.output_price_per_1m);
     let image = resolve_model_price_from_catalog(&prices, "gpt-image-2", 0).expect("image");
     assert_close(image.input_price_per_1m, 8.0);
     assert_close(image.cached_input_price_per_1m, 2.0);

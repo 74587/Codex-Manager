@@ -18,6 +18,7 @@ import {
   type AccountProxySource,
 } from "@/lib/api/account-client";
 import { useI18n } from "@/lib/i18n/provider";
+import { useAppStore } from "@/lib/store/useAppStore";
 import {
   buildAccountsByMovedOrder,
   buildAccountsBySizeOrder,
@@ -70,7 +71,16 @@ function canBulkDisableAccount(account: Account): boolean {
   return getAccountStatusActionType(account) === "disable";
 }
 
+interface AccountsPageContentProps {
+  serviceAddr: string;
+}
+
 export default function AccountsPage() {
+  const serviceAddr = useAppStore((state) => state.serviceStatus.addr);
+  return <AccountsPageContent key={serviceAddr || "default"} serviceAddr={serviceAddr} />;
+}
+
+function AccountsPageContent({ serviceAddr }: AccountsPageContentProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { isDesktopRuntime, canUseBrowserDownloadExport } =
@@ -419,7 +429,7 @@ export default function AccountsPage() {
   const openModelAssociation = async (account: Account) => {
     setFetchingModelsAccountId(account.id);
     try {
-      const result = await accountClient.fetchAccountModels(account.id);
+      const result = await accountClient.fetchAccountModels(account.id, serviceAddr);
       setModelAssociationAccount(account);
       setModelAssociationItems(result.items);
     } catch (error) {
@@ -450,6 +460,7 @@ export default function AccountsPage() {
         modelAssociationAccount.id,
         upstreamModels,
         displayNames,
+        serviceAddr,
       );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),

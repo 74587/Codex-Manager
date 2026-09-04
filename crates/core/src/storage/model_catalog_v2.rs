@@ -15,6 +15,10 @@ const GPT56_CURRENT_PRICING_MIGRATION_VERSION: &str = "126_model_catalog_gpt56_c
 const GPT56_OFFICIAL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/compare";
 const GPT6_ASTRA_MIGRATION_VERSION: &str = "131_model_catalog_gpt6_astra";
 const GPT6_ASTRA_MIGRATION_REVISION: i64 = 8;
+const GPT56_METADATA_FIX_MIGRATION_VERSION: &str = "132_model_catalog_gpt56_metadata_fix";
+const GPT56_METADATA_FIX_CONTEXT_WINDOW: i64 = 272_000;
+const GPT56_METADATA_FIX_MAX_CONTEXT_WINDOW: i64 = 872_000;
+const GPT56_METADATA_FIX_SHELL_TYPE: &str = "unified_exec";
 const GPT6_ASTRA_SLUG: &str = "gpt-6-astra";
 const GPT6_ASTRA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-astra";
 #[cfg(test)]
@@ -234,6 +238,21 @@ fn gpt6_astra_migration_fixture() -> Gpt6AstraMigrationFixture {
         Some(GPT6_ASTRA_PRICE_SOURCE)
     );
     fixture
+}
+
+fn sol_matches_gpt6_astra_migration_or_metadata_fix(
+    model: &ManagedModelV2,
+    migration_fixture: &Gpt6AstraMigrationFixture,
+) -> bool {
+    if model.capabilities == migration_fixture.sol_capabilities {
+        return true;
+    }
+
+    let mut fixed_capabilities = migration_fixture.sol_capabilities.clone();
+    fixed_capabilities["shell_type"] = Value::String(GPT56_METADATA_FIX_SHELL_TYPE.to_string());
+    model.context_window == Some(GPT56_METADATA_FIX_CONTEXT_WINDOW)
+        && model.max_context_window == Some(GPT56_METADATA_FIX_MAX_CONTEXT_WINDOW)
+        && model.capabilities == fixed_capabilities
 }
 
 fn clean_optional(value: Option<String>) -> Option<String> {
@@ -1780,7 +1799,10 @@ impl Storage {
                 let migrated_revision = model.builtin_revision.unwrap_or_default();
                 if migrated_revision < migration_fixture.revision
                     || (migrated_revision == migration_fixture.revision
-                        && model.capabilities != migration_fixture.sol_capabilities)
+                        && !sol_matches_gpt6_astra_migration_or_metadata_fix(
+                            model,
+                            &migration_fixture,
+                        ))
                 {
                     return Err(rusqlite::Error::SqliteFailure(
                         (),
@@ -1814,6 +1836,13 @@ impl Storage {
             migrations.insert(GPT6_ASTRA_MIGRATION_VERSION.to_string());
         }
         Ok(())
+    }
+
+    pub(super) fn apply_model_catalog_gpt56_metadata_fix_migration(&self) -> Result<()> {
+        self.apply_sql_migration(
+            GPT56_METADATA_FIX_MIGRATION_VERSION,
+            include_str!("../../migrations/132_model_catalog_gpt56_metadata_fix.sql"),
+        )
     }
 
     pub fn smoke_check_model_catalog_v2(&self) -> Result<()> {
@@ -2511,6 +2540,12 @@ mod tests {
         let gpt54 = all.iter().find(|model| model.slug == "gpt-5.4").unwrap();
         assert_eq!(gpt54.price_tiers.len(), 2);
         assert_eq!(gpt54.price_tiers[1].min_input_tokens, 272_000);
+        for slug in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let model = all.iter().find(|model| model.slug == slug).unwrap();
+            assert_eq!(model.context_window, Some(272_000));
+            assert_eq!(model.max_context_window, Some(872_000));
+            assert_eq!(model.capabilities["shell_type"], "unified_exec");
+        }
         let sol = all
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
@@ -2524,6 +2559,15 @@ mod tests {
             sol.capabilities["service_tiers"],
             serde_json::json!(["priority", "ultrafast"])
         );
+        let metadata_fix_applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
+                [GPT56_METADATA_FIX_MIGRATION_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(metadata_fix_applied, 1);
         let astra = all
             .iter()
             .find(|model| model.slug == GPT6_ASTRA_SLUG)
@@ -2839,6 +2883,7 @@ mod tests {
             .unwrap()
             .capabilities;
         old_sol_capabilities["service_tiers"] = serde_json::json!(["priority"]);
+        old_sol_capabilities["shell_type"] = serde_json::json!("shell_command");
 
         storage
             .conn
@@ -2862,7 +2907,8 @@ mod tests {
         storage
             .conn
             .execute(
-                "UPDATE models SET capabilities_json=?1
+                "UPDATE models
+                 SET context_window=372000,max_context_window=372000,capabilities_json=?1
                  WHERE slug='gpt-5.6-sol'",
                 [old_sol_capabilities.to_string()],
             )
@@ -2897,6 +2943,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(sol.builtin_revision, Some(8));
+        assert_eq!(sol.context_window, Some(372_000));
+        assert_eq!(sol.max_context_window, Some(372_000));
+        assert_eq!(sol.capabilities["shell_type"], "shell_command");
         assert_eq!(
             sol.capabilities["service_tiers"],
             serde_json::json!(["priority", "ultrafast"])
@@ -2945,6 +2994,192 @@ mod tests {
             )
             .unwrap();
         assert_eq!(price_source, GPT6_ASTRA_PRICE_SOURCE);
+    }
+
+    #[test]
+    fn gpt56_metadata_fix_upgrades_a_database_after_131_and_is_replay_idempotent() {
+        let storage = storage();
+        for slug in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let mut old_capabilities = storage
+                .get_managed_model_v2(slug)
+                .unwrap()
+                .unwrap()
+                .capabilities;
+            old_capabilities["shell_type"] = serde_json::json!("shell_command");
+            storage
+                .conn
+                .execute(
+                    "UPDATE models
+                     SET context_window=372000,max_context_window=372000,
+                         capabilities_json=?1,builtin_revision=8,user_edited=0,updated_at=7
+                     WHERE slug=?2",
+                    params![old_capabilities.to_string(), slug],
+                )
+                .unwrap();
+        }
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_METADATA_FIX_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        let astra_migration_applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
+                [GPT6_ASTRA_MIGRATION_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(astra_migration_applied, 1);
+
+        storage
+            .apply_model_catalog_gpt56_metadata_fix_migration()
+            .unwrap();
+        for (slug, expected_service_tiers) in [
+            ("gpt-5.6-sol", serde_json::json!(["priority", "ultrafast"])),
+            ("gpt-5.6-terra", serde_json::json!(["priority"])),
+            ("gpt-5.6-luna", serde_json::json!(["priority"])),
+        ] {
+            let migrated = storage.get_managed_model_v2(slug).unwrap().unwrap();
+            assert_eq!(migrated.builtin_revision, Some(8));
+            assert_eq!(migrated.context_window, Some(272_000));
+            assert_eq!(migrated.max_context_window, Some(872_000));
+            assert_eq!(migrated.capabilities["shell_type"], "unified_exec");
+            assert_eq!(
+                migrated.capabilities["service_tiers"],
+                expected_service_tiers
+            );
+        }
+
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET updated_at=123456789
+                 WHERE lower(slug) IN ('gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna')",
+                [],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_METADATA_FIX_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+        storage
+            .apply_model_catalog_gpt56_metadata_fix_migration()
+            .unwrap();
+
+        for slug in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let replayed = storage.get_managed_model_v2(slug).unwrap().unwrap();
+            assert_eq!(replayed.updated_at, 123_456_789);
+        }
+        let applied: i64 = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=?1",
+                [GPT56_METADATA_FIX_MIGRATION_VERSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applied, 1);
+    }
+
+    #[test]
+    fn gpt56_metadata_fix_preserves_user_edited_metadata() {
+        let storage = storage();
+        let custom_capabilities = serde_json::json!({
+            "shell_type": "custom_shell",
+            "service_tiers": ["private-fast"],
+            "custom": true
+        });
+        storage
+            .conn
+            .execute(
+                "UPDATE models
+                 SET context_window=111111,max_context_window=222222,
+                     capabilities_json=?1,builtin_revision=8,user_edited=1,updated_at=77
+                 WHERE slug='gpt-5.6-terra'",
+                [custom_capabilities.to_string()],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_METADATA_FIX_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        storage
+            .apply_model_catalog_gpt56_metadata_fix_migration()
+            .unwrap();
+        storage
+            .apply_model_catalog_gpt56_metadata_fix_migration()
+            .unwrap();
+
+        let preserved = storage
+            .get_managed_model_v2("gpt-5.6-terra")
+            .unwrap()
+            .unwrap();
+        assert!(preserved.user_edited);
+        assert_eq!(preserved.builtin_revision, Some(8));
+        assert_eq!(preserved.context_window, Some(111_111));
+        assert_eq!(preserved.max_context_window, Some(222_222));
+        assert_eq!(preserved.capabilities, custom_capabilities);
+        assert_eq!(preserved.updated_at, 77);
+    }
+
+    #[test]
+    fn gpt56_metadata_fix_preserves_future_builtin_metadata() {
+        let storage = storage();
+        let future_capabilities = serde_json::json!({
+            "shell_type": "future_shell",
+            "service_tiers": ["future-tier"],
+            "future": true
+        });
+        storage
+            .conn
+            .execute(
+                "UPDATE models
+                 SET context_window=999111,max_context_window=999222,
+                     capabilities_json=?1,builtin_revision=9,user_edited=0,updated_at=88
+                 WHERE slug='gpt-5.6-luna'",
+                [future_capabilities.to_string()],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT56_METADATA_FIX_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        storage
+            .apply_model_catalog_gpt56_metadata_fix_migration()
+            .unwrap();
+        storage
+            .apply_model_catalog_gpt56_metadata_fix_migration()
+            .unwrap();
+
+        let preserved = storage
+            .get_managed_model_v2("gpt-5.6-luna")
+            .unwrap()
+            .unwrap();
+        assert!(!preserved.user_edited);
+        assert_eq!(preserved.builtin_revision, Some(9));
+        assert_eq!(preserved.context_window, Some(999_111));
+        assert_eq!(preserved.max_context_window, Some(999_222));
+        assert_eq!(preserved.capabilities, future_capabilities);
+        assert_eq!(preserved.updated_at, 88);
     }
 
     #[test]

@@ -1492,7 +1492,7 @@ fn apply_model_fast_policy_with_storage(
         return Ok(prepared);
     };
     let model = storage
-        .get_enabled_model_v2(model_slug)
+        .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
         .map_err(|err| {
             WsSessionError::new(
                 500,
@@ -1509,7 +1509,7 @@ fn apply_model_fast_policy_with_storage(
         })?;
     let (body, applied) = crate::models_v2::fast_policy::apply(
         prepared.text.as_bytes().to_vec(),
-        model.fast_policy,
+        &model,
         prepared.raw_service_tier.as_deref(),
     )
     .map_err(|_| {
@@ -1517,8 +1517,10 @@ fn apply_model_fast_policy_with_storage(
             400,
             crate::models_v2::fast_policy::FAST_REQUEST_BLOCKED,
             crate::gateway::bilingual_error(
-                format!("模型 {model_slug} 不允许 Fast 请求"),
-                format!("model {model_slug} does not allow Fast requests"),
+                format!("模型 {model_slug} 不允许 Fast 请求（加速服务等级）"),
+                format!(
+                    "model {model_slug} does not allow Fast requests (accelerated service tier)"
+                ),
             ),
         )
     })?;

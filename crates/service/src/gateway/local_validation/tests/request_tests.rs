@@ -227,7 +227,7 @@ fn auto_is_not_misreported_as_fast() {
 }
 
 #[test]
-fn http_block_policy_only_rejects_fast_request_tiers() {
+fn http_block_policy_rejects_client_accelerated_tiers_and_filters_unsupported_tiers() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let mut model = storage
@@ -242,7 +242,7 @@ fn http_block_policy_only_rejects_fast_request_tiers() {
         })
         .expect("update block policy");
 
-    for tier in ["fast", "priority"] {
+    for tier in ["fast", "priority", "ultrafast"] {
         let body = serde_json::to_vec(&serde_json::json!({
             "model": "gpt-5.4-mini",
             "input": "hello",
@@ -250,11 +250,11 @@ fn http_block_policy_only_rejects_fast_request_tiers() {
         }))
         .expect("serialize request");
         let err = apply_model_fast_policy(&storage, Some("gpt-5.4-mini"), body, Some(tier))
-            .expect_err("Fast request tier must be blocked");
+            .expect_err("accelerated request tier must be blocked");
         assert_eq!(err.status_code, 400, "unexpected status for tier {tier}");
     }
 
-    for tier in ["auto", "default", "flex", "ultrafast"] {
+    for tier in ["auto", "default"] {
         let body = serde_json::to_vec(&serde_json::json!({
             "model": "gpt-5.4-mini",
             "input": "hello",
@@ -264,15 +264,100 @@ fn http_block_policy_only_rejects_fast_request_tiers() {
         let (body, applied) =
             match apply_model_fast_policy(&storage, Some("gpt-5.4-mini"), body, Some(tier)) {
                 Ok(result) => result,
-                Err(err) => panic!("non-Fast tier {tier} was rejected: {}", err.message),
+                Err(err) => panic!("non-accelerated tier {tier} was rejected: {}", err.message),
             };
         let payload: Value = serde_json::from_slice(&body).expect("parse request");
-        assert!(!applied, "Block policy must not rewrite tier {tier}");
+        assert!(!applied, "standard sentinel {tier} must remain allowed");
         assert_eq!(
             payload.get("service_tier").and_then(Value::as_str),
             Some(tier)
         );
     }
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": "gpt-5.4-mini",
+        "input": "hello",
+        "service_tier": "flex"
+    }))
+    .expect("serialize request");
+    let (body, applied) =
+        apply_model_fast_policy(&storage, Some("gpt-5.4-mini"), body, Some("flex"))
+            .unwrap_or_else(|err| panic!("Flex tier was rejected: {}", err.message));
+    let payload: Value = serde_json::from_slice(&body).expect("parse request");
+    assert!(applied, "unadvertised Flex tier must be omitted");
+    assert!(payload.get("service_tier").is_none());
+}
+
+#[test]
+fn http_model_catalog_filters_astra_ultrafast_but_preserves_sol_ultrafast() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+
+    for (model, expected_tier, expected_applied) in [
+        ("gpt-6-astra", None, true),
+        ("gpt-5.6-sol", Some("ultrafast"), false),
+    ] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": model,
+            "input": "hello",
+            "service_tier": "ultrafast"
+        }))
+        .expect("serialize request");
+        let (body, applied) = apply_model_fast_policy(&storage, Some(model), body, None)
+            .unwrap_or_else(|err| panic!("apply service tier for {model}: {}", err.message));
+        let payload: Value = serde_json::from_slice(&body).expect("parse request");
+        assert_eq!(
+            payload.get("service_tier").and_then(Value::as_str),
+            expected_tier,
+            "unexpected service tier for {model}"
+        );
+        assert_eq!(
+            applied, expected_applied,
+            "unexpected policy result for {model}"
+        );
+    }
+}
+
+#[test]
+fn reserve_alias_borrows_luna_catalog_policies_without_changing_model() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let mut luna = storage
+        .get_managed_model_v2(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        .expect("read Luna model")
+        .expect("Luna model");
+    luna.instructions_mode = "override".to_string();
+    luna.instructions_text = Some("Luna policy instructions".to_string());
+    luna.fast_policy = codexmanager_core::storage::ModelFastPolicyV2::Filter;
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(codexmanager_core::usage::LUNA_MODEL_SLUG.to_string()),
+            model: luna,
+        })
+        .expect("update Luna policies");
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": "gpt-reserve",
+        "input": "hello",
+        "service_tier": "fast"
+    }))
+    .expect("serialize request");
+    let body = apply_model_instructions_policy(
+        &storage,
+        Some("gpt-reserve"),
+        body,
+        crate::models_v2::instructions::InstructionProtocolV2::OpenAi,
+    )
+    .unwrap_or_else(|err| panic!("apply borrowed Luna instructions policy: {}", err.message));
+    let (body, applied) =
+        apply_model_fast_policy(&storage, Some("gpt-reserve"), body, Some("fast"))
+            .unwrap_or_else(|err| panic!("apply borrowed Luna Fast policy: {}", err.message));
+    let payload: Value = serde_json::from_slice(&body).expect("parse rewritten request");
+
+    assert!(applied);
+    assert_eq!(payload["model"], "gpt-reserve");
+    assert_eq!(payload["instructions"], "Luna policy instructions");
+    assert!(payload.get("service_tier").is_none());
 }
 
 #[test]

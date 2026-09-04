@@ -127,7 +127,7 @@ mod tests {
             secondary_window_minutes: Some(10080),
             secondary_resets_at: None,
             credits_json: Some(
-                r#"{"_codexmanager_extra_rate_limits":[{"metered_feature":"base_model_inference","primary_window":{"used_percent":10.0}}]}"#.to_string(),
+                r#"{"_codexmanager_extra_rate_limits":[{"limit_name":"gpt-reserve","metered_feature":"base_model_inference","primary_window":{"used_percent":10.0}}]}"#.to_string(),
             ),
             captured_at: 1,
         });

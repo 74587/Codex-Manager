@@ -16,65 +16,101 @@ export {
 } from "./model-price-v2";
 
 export const managedModelsV2Client = {
-  list(includeHidden = false): Promise<ManagedModelListV2Result> {
+  list(
+    includeHidden = false,
+    addr?: string | null,
+  ): Promise<ManagedModelListV2Result> {
     return invoke<ManagedModelListV2Result>(
       "service_managed_model_list_v2",
-      withAddr({ includeHidden }),
+      withAddr({
+        includeHidden,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  get(slug: string): Promise<ManagedModelV2> {
+  get(slug: string, addr?: string | null): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_get_v2",
-      withAddr({ slug }),
+      withAddr({
+        slug,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  upsert(input: ManagedModelV2Upsert): Promise<ManagedModelV2> {
+  upsert(
+    input: ManagedModelV2Upsert,
+    addr?: string | null,
+  ): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_upsert_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  updateState(input: ManagedModelStateV2Update): Promise<ManagedModelV2> {
+  updateState(
+    input: ManagedModelStateV2Update,
+    addr?: string | null,
+  ): Promise<ManagedModelV2> {
     return invoke<ManagedModelV2>(
       "service_managed_model_update_state_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
   updateStates(
     input: ManagedModelBatchStateV2Update,
+    addr?: string | null,
   ): Promise<ManagedModelV2[]> {
     return invoke<ManagedModelV2[]>(
       "service_managed_model_batch_update_state_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
-  delete(slug: string): Promise<void> {
+  delete(slug: string, addr?: string | null): Promise<void> {
     return invoke<void>(
       "service_managed_model_delete_v2",
-      withAddr({ slug }),
+      withAddr({
+        slug,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
   previewImport(
     input: ManagedModelImportV2Params,
+    addr?: string | null,
   ): Promise<ManagedModelImportPreviewV2Result> {
     return invoke<ManagedModelImportPreviewV2Result>(
       "service_managed_model_import_preview_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 
   commitImport(
     input: ManagedModelImportV2Params,
+    addr?: string | null,
   ): Promise<ManagedModelImportPreviewV2Result> {
     return invoke<ManagedModelImportPreviewV2Result>(
       "service_managed_model_import_commit_v2",
-      withAddr({ payload: input }),
+      withAddr({
+        payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
   },
 };

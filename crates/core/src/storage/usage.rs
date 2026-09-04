@@ -1,4 +1,4 @@
-use rusqlite::{params_from_iter, Result, Row};
+use rusqlite::{params_from_iter, OptionalExtension, Result, Row};
 
 use super::key_id_filters::{normalize_text_ids, text_id_in_clause, SQLITE_IN_CLAUSE_BATCH_SIZE};
 use super::{
@@ -137,6 +137,73 @@ impl Storage {
             ),
         )?;
         Ok(())
+    }
+
+    /// Inserts one usage snapshot and prunes older rows for the same account in
+    /// a single transaction. A retain value of zero preserves the existing
+    /// unlimited-retention behavior.
+    pub fn insert_usage_snapshot_and_prune(
+        &self,
+        snap: &UsageSnapshotRecord,
+        retain: usize,
+    ) -> Result<usize> {
+        self.insert_usage_snapshot_and_prune_with_previous(snap, retain, |_, _| Ok(()))
+            .map(|(_, pruned)| pruned)
+    }
+
+    /// Resolves a snapshot against the immediately previous row while holding
+    /// the same immediate transaction used for insertion and pruning. This
+    /// keeps read-modify-write decisions account-serializable across storage
+    /// connections.
+    pub fn insert_usage_snapshot_and_prune_with_previous<F>(
+        &self,
+        snap: &UsageSnapshotRecord,
+        retain: usize,
+        resolve: F,
+    ) -> Result<(UsageSnapshotRecord, usize)>
+    where
+        F: FnOnce(Option<&UsageSnapshotRecord>, &mut Option<String>) -> Result<()>,
+    {
+        let tx = self.conn.unchecked_transaction()?;
+        let previous = tx
+            .query_row(
+                latest_usage_snapshot_for_account_sql(),
+                [&snap.account_id],
+                |row| map_usage_snapshot_row(row),
+            )
+            .optional()?;
+        let mut resolved = snap.clone();
+        if let Some(previous) = previous.as_ref() {
+            // Locally captured snapshots are ordered by arrival. Keep the
+            // persisted timestamp monotonic so a corrected system clock cannot
+            // make an older, future-dated row survive pruning indefinitely.
+            resolved.captured_at = resolved.captured_at.max(previous.captured_at);
+        }
+        resolve(previous.as_ref(), &mut resolved.credits_json)?;
+        tx.execute(
+            "INSERT INTO usage_snapshots (account_id, used_percent, window_minutes, resets_at, secondary_used_percent, secondary_window_minutes, secondary_resets_at, credits_json, captured_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (
+                &resolved.account_id,
+                resolved.used_percent,
+                resolved.window_minutes,
+                resolved.resets_at,
+                resolved.secondary_used_percent,
+                resolved.secondary_window_minutes,
+                resolved.secondary_resets_at,
+                &resolved.credits_json,
+                resolved.captured_at,
+            ),
+        )?;
+        let pruned = if retain > 0 {
+            tx.execute(
+                prune_usage_snapshots_for_account_sql(),
+                (&resolved.account_id, retain as i64),
+            )?
+        } else {
+            0
+        };
+        tx.commit()?;
+        Ok((resolved, pruned))
     }
 
     /// 函数 `prune_usage_snapshots_for_account`

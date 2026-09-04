@@ -87,7 +87,7 @@ pub(crate) fn set_account_status_with_context(
     status: &str,
     reason: &str,
     context: Option<&AccountStatusContext>,
-) {
+) -> bool {
     let (account_exists, changed) = storage
         .update_account_status_if_changed_with_existence(account_id, status)
         .unwrap_or((false, false));
@@ -112,6 +112,7 @@ pub(crate) fn set_account_status_with_context(
             created_at: now_ts(),
         });
     }
+    changed
 }
 
 /// 函数 `should_preserve_manual_account_status`

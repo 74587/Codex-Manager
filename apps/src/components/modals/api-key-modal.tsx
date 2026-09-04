@@ -25,6 +25,10 @@ import {
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
 import {
+  buildAccountListQueryKey,
+  buildManagedModelSelectorQueryKey,
+} from "@/lib/api/account-query-keys";
+import {
   managedModelsV2Client,
   managedModelV2ToModelInfo,
 } from "@/lib/api/managed-models-v2";
@@ -195,17 +199,17 @@ export function ApiKeyModal({
     : t("当前运行环境暂不支持平台密钥管理。");
 
   const { data: models } = useQuery({
-    queryKey: ["managed-models-v2", "selector"],
+    queryKey: buildManagedModelSelectorQueryKey(serviceStatus.addr),
     queryFn: async () => {
-      const result = await managedModelsV2Client.list(false);
+      const result = await managedModelsV2Client.list(false, serviceStatus.addr);
       return { models: result.items.map(managedModelV2ToModelInfo) };
     },
     enabled: open && isServiceReady,
   });
 
   const { data: accountList } = useQuery({
-    queryKey: ["accounts", "list"],
-    queryFn: () => accountClient.list(),
+    queryKey: buildAccountListQueryKey(serviceStatus.addr),
+    queryFn: () => accountClient.list(serviceStatus.addr),
     enabled: open && isAdminMode && isServiceReady,
     retry: 1,
   });
@@ -379,22 +383,28 @@ export function ApiKeyModal({
 
       let savedKeyId = apiKey?.id || "";
       if (apiKey?.id) {
-        await accountClient.updateApiKey(apiKey.id, params);
+        await accountClient.updateApiKey(apiKey.id, params, serviceStatus.addr);
         savedKeyId = apiKey.id;
         toast.success(t("密钥配置已更新"));
       } else {
-        const result = await accountClient.createApiKey(params);
+        const result = await accountClient.createApiKey(
+          params,
+          serviceStatus.addr,
+        );
         savedKeyId = result.id;
         setGeneratedKey(result.key);
         toast.success(t("平台密钥已创建"));
       }
       if (memberOwnershipEnabled && savedKeyId && normalizedOwnerUserId) {
-        await appClient.setApiKeyOwner({
-          keyId: savedKeyId,
-          ownerKind: "user",
-          ownerUserId: normalizedOwnerUserId,
-          projectId: null,
-        });
+        await appClient.setApiKeyOwner(
+          {
+            keyId: savedKeyId,
+            ownerKind: "user",
+            ownerUserId: normalizedOwnerUserId,
+            projectId: null,
+          },
+          serviceStatus.addr,
+        );
         await onOwnerSaved?.();
       }
 

@@ -22,12 +22,71 @@ pub(crate) fn bilingual_error(
 }
 
 pub(crate) fn extract_raw_error_message(message: &str) -> Option<&str> {
-    let (_, tail) = message.rsplit_once('(')?;
-    let tail = tail.strip_suffix(')')?.trim();
+    let message = message.trim();
+    if !message.ends_with(')') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut opening = None;
+    for (index, ch) in message.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    opening = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let opening = opening?;
+    if !message[..opening].chars().any(|ch| !ch.is_ascii()) {
+        return None;
+    }
+    let tail = message[opening + 1..message.len() - 1].trim();
     if tail.is_empty() || !tail.is_ascii() || !tail.chars().any(|ch| ch.is_ascii_alphabetic()) {
         return None;
     }
     Some(tail)
+}
+
+#[cfg(test)]
+mod bilingual_error_tests {
+    use super::*;
+
+    #[test]
+    fn raw_error_extraction_preserves_nested_parentheses() {
+        let message = bilingual_error(
+            "模型不允许加速请求",
+            "model does not allow Fast requests (accelerated service tier)",
+        );
+        assert_eq!(
+            extract_raw_error_message(&message),
+            Some("model does not allow Fast requests (accelerated service tier)")
+        );
+    }
+
+    #[test]
+    fn raw_error_extraction_keeps_simple_messages_and_rejects_non_bilingual_text() {
+        assert_eq!(
+            extract_raw_error_message(&bilingual_error("缺少 API Key", "missing api key")),
+            Some("missing api key")
+        );
+        assert_eq!(extract_raw_error_message("plain error"), None);
+        assert_eq!(
+            extract_raw_error_message(
+                "model does not allow Fast requests (accelerated service tier)"
+            ),
+            None
+        );
+        assert_eq!(extract_raw_error_message("中文错误（无英文）"), None);
+    }
 }
 
 fn is_codex_user_agent(value: &str) -> bool {

@@ -1,7 +1,7 @@
 use codexmanager_core::usage::{
-    accounts_check_endpoint, has_usable_luna_reserve, is_luna_reserve_model,
-    merge_missing_extra_rate_limits, parse_reset_credits_snapshot, parse_usage_snapshot,
-    reset_credits_consume_endpoint, reset_credits_endpoint, usage_endpoint,
+    accounts_check_endpoint, has_usable_luna_reserve, has_usable_luna_reserve_at,
+    is_luna_reserve_model, merge_missing_extra_rate_limits, parse_reset_credits_snapshot,
+    parse_usage_snapshot, reset_credits_consume_endpoint, reset_credits_endpoint, usage_endpoint,
     usage_payload_declares_extra_rate_limits,
 };
 use serde_json::{json, Value};
@@ -156,8 +156,11 @@ fn luna_reserve_survives_camel_case_usage_payload_and_exhausted_standard_window(
 
     let snapshot = parse_usage_snapshot(&payload);
     assert!(has_usable_luna_reserve(snapshot.credits_json.as_deref()));
-    assert!(is_luna_reserve_model(Some("gpt-5.6-luna")));
     assert!(is_luna_reserve_model(Some("gpt-reserve")));
+    assert!(is_luna_reserve_model(Some(" GPT-RESERVE ")));
+    assert!(!is_luna_reserve_model(Some("gpt-5.6-luna")));
+    assert!(!is_luna_reserve_model(Some("custom-luna-router")));
+    assert!(!is_luna_reserve_model(Some("gpt-reserve-preview")));
     assert!(!is_luna_reserve_model(Some("gpt-5.6")));
 
     let credits: serde_json::Value =
@@ -194,6 +197,75 @@ fn luna_reserve_is_unusable_when_explicitly_reached_or_empty() {
         let snapshot = parse_usage_snapshot(&payload);
         assert!(!has_usable_luna_reserve(snapshot.credits_json.as_deref()));
     }
+}
+
+#[test]
+fn luna_reserve_requires_explicit_reset_timestamps_to_be_current() {
+    let now = 2_000_000_000_i64;
+    let credits = |reset_at: Value| {
+        json!({
+            "_codexmanager_extra_rate_limits": [{
+                "limit_name": "Luna Reserve",
+                "primary_window": {
+                    "remainingPercent": 100.0,
+                    "resetAt": reset_at
+                }
+            }]
+        })
+        .to_string()
+    };
+
+    for expired in [
+        json!(now),
+        json!(now - 1),
+        json!(now * 1000),
+        json!(((now - 1) * 1000).to_string()),
+        json!("not-a-timestamp"),
+    ] {
+        assert!(
+            !has_usable_luna_reserve_at(Some(&credits(expired)), now),
+            "expired or invalid reset timestamp must fail closed"
+        );
+    }
+    for future in [
+        json!(now + 1),
+        json!((now + 1) * 1000),
+        json!(((now + 1) * 1000).to_string()),
+    ] {
+        assert!(has_usable_luna_reserve_at(Some(&credits(future)), now));
+    }
+    let legacy_without_reset = json!({
+        "_codexmanager_extra_rate_limits": [{
+            "limit_name": "Luna Reserve",
+            "primary_window": { "remaining_percent": 1.0 }
+        }]
+    })
+    .to_string();
+    assert!(has_usable_luna_reserve_at(Some(&legacy_without_reset), now));
+}
+
+#[test]
+fn generic_base_model_inference_is_not_luna_reserve() {
+    let payload = json!({
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 100.0,
+                "limit_window_seconds": 18000
+            }
+        },
+        "additionalRateLimits": [{
+            "meteredFeature": "base_model_inference",
+            "rateLimit": {
+                "primaryWindow": {
+                    "remainingPercent": 100.0,
+                    "limitWindowSeconds": 604800
+                }
+            }
+        }]
+    });
+
+    let snapshot = parse_usage_snapshot(&payload);
+    assert!(!has_usable_luna_reserve(snapshot.credits_json.as_deref()));
 }
 
 #[test]

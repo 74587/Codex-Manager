@@ -1445,6 +1445,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                   <TableRow data-account-pool-main-row>
                 <TableHead className="w-12 text-center">
                   <Checkbox
+                    aria-label={t("全选")}
                     checked={
                       visibleAccounts.length > 0 &&
                       visibleAccounts.every((account) =>
@@ -1521,6 +1522,7 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                     >
                       <TableCell className="text-center">
                         <Checkbox
+                          aria-label={`${t("选择账号")} ${account.name}`}
                           checked={effectiveSelectedIds.includes(account.id)}
                           onCheckedChange={() => toggleSelect(account.id)}
                         />
@@ -1636,12 +1638,11 @@ export function AccountsPageView(props: AccountsPageViewProps) {
             </div>
             <div
               className="account-pool-action-rail"
-              role="table"
+              role="group"
               aria-label={t("账号操作")}
             >
               <div
                 className="account-pool-action-rail-head"
-                role="columnheader"
                 data-account-pool-action-row
               >
                 {t("操作")}
@@ -1651,7 +1652,6 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                   <div
                     key={index}
                     className="account-pool-action-rail-row"
-                    role="cell"
                     data-account-pool-action-row
                   >
                     <Skeleton className="mx-auto h-8 w-20" />
@@ -1668,7 +1668,6 @@ export function AccountsPageView(props: AccountsPageViewProps) {
                   <div
                     key={account.id}
                     className="account-pool-action-rail-row"
-                    role="cell"
                     data-account-pool-action-row
                   >
                     {renderAccountActions(account)}

@@ -64,8 +64,8 @@ fn websocket_frame_applies_model_fast_policy() {
         (
             ModelFastPolicyV2::Passthrough,
             Some("ultrafast"),
-            Some("ultrafast"),
-            Some("client_request"),
+            None,
+            Some("model_policy"),
         ),
         (
             ModelFastPolicyV2::Filter,
@@ -130,7 +130,7 @@ fn websocket_frame_applies_model_fast_policy() {
             model,
         })
         .expect("update block policy");
-    for tier in ["fast", "priority"] {
+    for tier in ["fast", "priority", "ultrafast"] {
         let frame = json!({
             "type": "response.create",
             "model": "gpt-5.4",
@@ -145,7 +145,7 @@ fn websocket_frame_applies_model_fast_policy() {
             "tier {tier} must retain its client source before policy evaluation"
         );
         let err = match apply_model_fast_policy_with_storage(prepared, &storage) {
-            Ok(_) => panic!("block policy must reject explicit Fast tier {tier}"),
+            Ok(_) => panic!("block policy must reject explicit accelerated tier {tier}"),
             Err(err) => err,
         };
         assert_eq!(err.status, 400);
@@ -155,12 +155,9 @@ fn websocket_frame_applies_model_fast_policy() {
         );
     }
 
-    for (tier, expected_upstream_tier, expected_log_tier) in [
-        ("auto", None, None),
-        ("default", None, Some("standard")),
-        ("flex", Some("flex"), Some("flex")),
-        ("ultrafast", Some("ultrafast"), Some("ultrafast")),
-    ] {
+    for (tier, expected_upstream_tier, expected_log_tier) in
+        [("auto", None, None), ("default", None, Some("standard"))]
+    {
         let frame = json!({
             "type": "response.create",
             "model": "gpt-5.4",
@@ -187,6 +184,44 @@ fn websocket_frame_applies_model_fast_policy() {
         );
     }
 
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "input": "hello",
+        "service_tier": "flex"
+    });
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .expect("rewrite unsupported Flex frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("unsupported Flex tier must be omitted rather than rejected");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse filtered frame");
+    assert!(value.get("service_tier").is_none());
+    assert_eq!(prepared.effective_service_tier, None);
+    assert_eq!(
+        prepared.service_tier_source.as_deref(),
+        Some("model_policy")
+    );
+
+    let frame = json!({
+        "type": "response.create",
+        "model": "gpt-5.6-sol",
+        "input": "hello",
+        "service_tier": "ultrafast"
+    });
+    let prepared = rewrite_client_frame(frame.to_string().as_str(), &context)
+        .expect("rewrite Sol Ultrafast frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("Sol must accept its advertised Ultrafast tier");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse Sol frame");
+    assert_eq!(
+        value.get("service_tier").and_then(Value::as_str),
+        Some("ultrafast")
+    );
+    assert_eq!(
+        prepared.service_tier_source.as_deref(),
+        Some("client_request")
+    );
+
     let mut api_key_fast_context = context.clone();
     api_key_fast_context.api_key.service_tier = Some("fast".to_string());
     let prepared = rewrite_client_frame(
@@ -210,11 +245,13 @@ fn websocket_frame_applies_model_fast_policy() {
     )
     .expect("rewrite API key ultrafast frame");
     let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
-        .expect("block policy must allow API key injected ultrafast tier");
+        .expect("unsupported API key Ultrafast tier must be omitted");
     let value: Value = serde_json::from_str(&prepared.text).expect("parse API key ultrafast frame");
+    assert!(value.get("service_tier").is_none());
+    assert_eq!(prepared.effective_service_tier, None);
     assert_eq!(
-        value.get("service_tier").and_then(Value::as_str),
-        Some("ultrafast")
+        prepared.service_tier_source.as_deref(),
+        Some("model_policy")
     );
 
     let mut api_key_standard_context = context.clone();
@@ -255,6 +292,47 @@ fn websocket_frame_applies_model_fast_policy() {
         .expect("apply final model fast policy");
     let value: Value = serde_json::from_str(&prepared.text).expect("parse overridden model frame");
     assert_eq!(prepared.model.as_deref(), Some("gpt-5.4-mini"));
+    assert!(value.get("service_tier").is_none());
+}
+
+#[test]
+fn websocket_frame_preserves_reserve_alias_and_borrows_luna_policy() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let mut luna = storage
+        .get_managed_model_v2(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        .expect("read Luna model")
+        .expect("Luna model");
+    luna.fast_policy = ModelFastPolicyV2::Filter;
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(codexmanager_core::usage::LUNA_MODEL_SLUG.to_string()),
+            model: luna,
+        })
+        .expect("update Luna policy");
+
+    let mut context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: sample_incoming_headers(None, None),
+        prompt_cache_key: None,
+        cache_affinity_key: None,
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    context.api_key.model_slug = Some(codexmanager_core::usage::LUNA_MODEL_SLUG.to_string());
+    let prepared = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-reserve","input":"hello","service_tier":"fast"}"#,
+        &context,
+    )
+    .expect("rewrite Reserve websocket frame");
+    let prepared = apply_model_fast_policy_with_storage(prepared, &storage)
+        .expect("apply borrowed Luna policy");
+    let value: Value = serde_json::from_str(&prepared.text).expect("parse rewritten frame");
+
+    assert_eq!(prepared.model.as_deref(), Some("gpt-reserve"));
+    assert_eq!(value["model"], "gpt-reserve");
     assert!(value.get("service_tier").is_none());
 }
 

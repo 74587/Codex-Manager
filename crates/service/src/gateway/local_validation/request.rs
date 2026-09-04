@@ -100,7 +100,7 @@ fn apply_model_instructions_policy(
         return Ok(body);
     };
     let model = storage
-        .get_enabled_model_v2(model_slug)
+        .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
         .map_err(|err| {
             LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
         })?
@@ -128,22 +128,22 @@ fn apply_model_fast_policy(
         return Ok((body, false));
     };
     let model = storage
-        .get_enabled_model_v2(model_slug)
+        .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
         .map_err(|err| {
             LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
         })?
         .ok_or_else(|| LocalValidationError::new(404, format!("model_not_found: {model_slug}")))?;
-    crate::models_v2::fast_policy::apply(body, model.fast_policy, client_service_tier).map_err(
-        |_| {
-            LocalValidationError::new(
-                400,
-                crate::gateway::bilingual_error(
-                    format!("模型 {model_slug} 不允许 Fast 请求"),
-                    format!("model {model_slug} does not allow Fast requests"),
+    crate::models_v2::fast_policy::apply(body, &model, client_service_tier).map_err(|_| {
+        LocalValidationError::new(
+            400,
+            crate::gateway::bilingual_error(
+                format!("模型 {model_slug} 不允许 Fast 请求（加速服务等级）"),
+                format!(
+                    "model {model_slug} does not allow Fast requests (accelerated service tier)"
                 ),
-            )
-        },
-    )
+            ),
+        )
+    })
 }
 
 fn is_removed_openai_compat_request_path(normalized_path: &str) -> bool {
@@ -448,9 +448,11 @@ fn ensure_non_text_model_not_used_for_text_request(
         ));
     }
 
-    let catalog_model = storage.get_managed_model_v2(model_slug).map_err(|err| {
-        LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
-    })?;
+    let catalog_model = storage
+        .get_managed_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
+        .map_err(|err| {
+            LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
+        })?;
     if catalog_model
         .as_ref()
         .is_none_or(crate::models_v2::supports_text_generation)
@@ -2104,10 +2106,16 @@ pub(super) fn build_local_validation_result(
         compact_model_override_for_logical_request.as_deref(),
     )
     .0;
-    let passthrough_model_for_policy = compact_model_override_for_logical_request
-        .as_deref()
-        .or(api_key.model_slug.as_deref())
-        .or(initial_request_meta.model.as_deref());
+    let passthrough_policy_model = super::super::parse_request_json_value(&passthrough_body)
+        .as_ref()
+        .map(super::super::parse_request_metadata_from_value)
+        .and_then(|metadata| metadata.model);
+    let passthrough_model_for_policy = passthrough_policy_model.as_deref().or_else(|| {
+        compact_model_override_for_logical_request
+            .as_deref()
+            .or(api_key.model_slug.as_deref())
+            .or(initial_request_meta.model.as_deref())
+    });
     passthrough_body = apply_model_instructions_policy(
         &storage,
         passthrough_model_for_policy,
@@ -2270,6 +2278,12 @@ pub(super) fn build_local_validation_result(
             .or(initial_request_meta.model.as_deref()),
     )
     .or(effective_model);
+    if crate::models_v2::should_preserve_luna_reserve_alias(
+        initial_request_meta.model.as_deref(),
+        effective_model.as_deref(),
+    ) {
+        effective_model = Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG.to_string());
+    }
     let instruction_model = effective_model
         .as_deref()
         .or(initial_request_meta.model.as_deref());

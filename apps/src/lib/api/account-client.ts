@@ -420,14 +420,20 @@ async function importAccountContents(contents: string[]): Promise<AccountImportR
 }
 
 export const accountClient = {
-  async list(): Promise<AccountListResult> {
-    const result = await invoke<unknown>("service_account_list", withAddr());
+  async list(addr?: string | null): Promise<AccountListResult> {
+    const result = await invoke<unknown>(
+      "service_account_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeAccountList(result);
   },
-  async fetchAccountModels(accountId: string): Promise<AccountFetchModelsResult> {
+  async fetchAccountModels(
+    accountId: string,
+    addr?: string | null,
+  ): Promise<AccountFetchModelsResult> {
     const result = await invoke<unknown>(
       "service_account_fetch_models",
-      withAddr({ accountId }),
+      withAddr({ accountId, ...(addr === undefined ? {} : { addr: addr || null }) }),
     );
     return normalizeAccountFetchModelsResult(result);
   },
@@ -435,6 +441,7 @@ export const accountClient = {
     accountId: string,
     upstreamModels: string[],
     displayNames?: Record<string, string>,
+    addr?: string | null,
   ): Promise<AggregateApiAssociateModelsResult> {
     const result = await invoke<unknown>(
       "service_account_associate_models",
@@ -442,6 +449,7 @@ export const accountClient = {
         accountId,
         upstreamModels,
         displayNames: displayNames || null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
       }),
     );
     return normalizeAggregateApiAssociateModelsResult(result);
@@ -741,8 +749,11 @@ export const accountClient = {
     const result = await invoke<unknown>("service_usage_read", withAddr());
     return normalizeUsageSnapshot(unwrapUsageSnapshotPayload(result));
   },
-  async listUsage(): Promise<AccountUsage[]> {
-    const result = await invoke<unknown>("service_usage_list", withAddr());
+  async listUsage(addr?: string | null): Promise<AccountUsage[]> {
+    const result = await invoke<unknown>(
+      "service_usage_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeUsageList(result);
   },
   async refreshUsage(accountId?: string): Promise<AccountUsageRefreshResult> {
@@ -831,11 +842,17 @@ export const accountClient = {
     return readChatgptAuthTokensRefreshAllResult(result);
   },
 
-  async listAggregateApis(): Promise<AggregateApi[]> {
-    const result = await invoke<unknown>("service_aggregate_api_list", withAddr());
+  async listAggregateApis(addr?: string | null): Promise<AggregateApi[]> {
+    const result = await invoke<unknown>(
+      "service_aggregate_api_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeAggregateApiList(result);
   },
-  async createAggregateApi(params: AggregateApiPayload): Promise<AggregateApiCreateResult> {
+  async createAggregateApi(
+    params: AggregateApiPayload,
+    addr?: string | null,
+  ): Promise<AggregateApiCreateResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_create",
       withAddr({
@@ -876,11 +893,16 @@ export const accountClient = {
           typeof params.balanceQueryConfigJson === "string"
             ? params.balanceQueryConfigJson
             : null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
       })
     );
     return normalizeAggregateApiCreateResult(result);
   },
-  updateAggregateApi: (apiId: string, params: AggregateApiPayload) =>
+  updateAggregateApi: (
+    apiId: string,
+    params: AggregateApiPayload,
+    addr?: string | null,
+  ) =>
     invoke(
       "service_aggregate_api_update",
       withAddr({
@@ -922,35 +944,66 @@ export const accountClient = {
           typeof params.balanceQueryConfigJson === "string"
             ? params.balanceQueryConfigJson
             : null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
       })
     ),
-  deleteAggregateApi: (apiId: string) =>
-    invoke("service_aggregate_api_delete", withAddr({ id: apiId })),
-  async readAggregateApiSecret(apiId: string): Promise<AggregateApiSecretResult> {
+  deleteAggregateApi: (apiId: string, addr?: string | null) =>
+    invoke(
+      "service_aggregate_api_delete",
+      withAddr({
+        id: apiId,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    ),
+  async readAggregateApiSecret(
+    apiId: string,
+    addr?: string | null,
+  ): Promise<AggregateApiSecretResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_read_secret",
-      withAddr({ id: apiId })
+      withAddr({
+        id: apiId,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return normalizeAggregateApiSecretResult(result);
   },
-  async testAggregateApiConnection(apiId: string): Promise<AggregateApiTestResult> {
+  async testAggregateApiConnection(
+    apiId: string,
+    addr?: string | null,
+  ): Promise<AggregateApiTestResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_test_connection",
-      withAddr({ id: apiId })
+      withAddr({
+        id: apiId,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return normalizeAggregateApiTestResult(result);
   },
-  async refreshAggregateApiBalance(apiId: string): Promise<AggregateApiBalanceRefreshResult> {
+  async refreshAggregateApiBalance(
+    apiId: string,
+    addr?: string | null,
+  ): Promise<AggregateApiBalanceRefreshResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_refresh_balance",
-      withAddr({ id: apiId })
+      withAddr({
+        id: apiId,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return normalizeAggregateApiBalanceRefreshResult(result);
   },
-  async fetchAggregateApiModels(apiId: string): Promise<AggregateApiFetchModelsResult> {
+  async fetchAggregateApiModels(
+    apiId: string,
+    addr?: string | null,
+  ): Promise<AggregateApiFetchModelsResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_fetch_models",
-      withAddr({ id: apiId }),
+      withAddr({
+        id: apiId,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return normalizeAggregateApiFetchModelsResult(result);
   },
@@ -958,18 +1011,30 @@ export const accountClient = {
     apiId: string,
     upstreamModels: string[],
     displayNames?: Record<string, string>,
+    addr?: string | null,
   ): Promise<AggregateApiAssociateModelsResult> {
     const result = await invoke<unknown>(
       "service_aggregate_api_associate_models",
-      withAddr({ apiId, upstreamModels, displayNames: displayNames || null }),
+      withAddr({
+        apiId,
+        upstreamModels,
+        displayNames: displayNames || null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     );
     return normalizeAggregateApiAssociateModelsResult(result);
   },
-  async listApiKeys(): Promise<ApiKey[]> {
-    const result = await invoke<unknown>("service_apikey_list", withAddr());
+  async listApiKeys(addr?: string | null): Promise<ApiKey[]> {
+    const result = await invoke<unknown>(
+      "service_apikey_list",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeApiKeyList(result);
   },
-  async createApiKey(params: ApiKeyPayload): Promise<ApiKeyCreateResult> {
+  async createApiKey(
+    params: ApiKeyPayload,
+    addr?: string | null,
+  ): Promise<ApiKeyCreateResult> {
     const result = await invoke<unknown>(
       "service_apikey_create",
       withAddr({
@@ -986,29 +1051,52 @@ export const accountClient = {
         accountGroupFilter: params.accountGroupFilter || null,
         quotaLimitTokens: params.quotaLimitTokens ?? null,
         customKey: params.customKey || null,
+        ...(addr === undefined ? {} : { addr: addr || null }),
       })
     );
     return normalizeApiKeyCreateResult(result);
   },
-  async listApiKeyUsageStats(): Promise<ApiKeyUsageStat[]> {
-    const result = await invoke<unknown>("service_apikey_usage_stats", withAddr());
+  async listApiKeyUsageStats(addr?: string | null): Promise<ApiKeyUsageStat[]> {
+    const result = await invoke<unknown>(
+      "service_apikey_usage_stats",
+      withAddr(addr === undefined ? {} : { addr: addr || null }),
+    );
     return normalizeApiKeyUsageStats(result);
   },
-  deleteApiKey: (keyId: string) =>
-    invoke("service_apikey_delete", withAddr({ keyId })),
-  updateApiKey: (keyId: string, params: ApiKeyPayload) =>
+  deleteApiKey: (keyId: string, addr?: string | null) =>
+    invoke(
+      "service_apikey_delete",
+      withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) }),
+    ),
+  updateApiKey: (
+    keyId: string,
+    params: ApiKeyPayload,
+    addr?: string | null,
+  ) =>
     invoke(
       "service_apikey_update_model",
-      withAddr(buildApiKeyUpdateInvokePayload(keyId, params)),
+      withAddr({
+        ...buildApiKeyUpdateInvokePayload(keyId, params),
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
     ),
-  disableApiKey: (keyId: string) =>
-    invoke("service_apikey_disable", withAddr({ keyId })),
-  enableApiKey: (keyId: string) =>
-    invoke("service_apikey_enable", withAddr({ keyId })),
-  async readApiKeySecret(keyId: string): Promise<string> {
+  disableApiKey: (keyId: string, addr?: string | null) =>
+    invoke(
+      "service_apikey_disable",
+      withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) }),
+    ),
+  enableApiKey: (keyId: string, addr?: string | null) =>
+    invoke(
+      "service_apikey_enable",
+      withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) }),
+    ),
+  async readApiKeySecret(
+    keyId: string,
+    addr?: string | null,
+  ): Promise<string> {
     const result = await invoke<unknown>(
       "service_apikey_read_secret",
-      withAddr({ keyId })
+      withAddr({ keyId, ...(addr === undefined ? {} : { addr: addr || null }) })
     );
     return readApiKeySecret(result);
   },

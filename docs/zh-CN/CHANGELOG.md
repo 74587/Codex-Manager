@@ -15,7 +15,7 @@
 ### Fixed
 
 - 修复 Luna Reserve 用量在后续刷新或暂态空列表后从账号页消失的问题，并统一兼容附加额度的 snake_case/camelCase 返回结构。
-- 修复标准 5h/7d 窗口耗尽后仍有 Luna Reserve 的账号被自动限流、无法进入 `gpt-5.6-luna` 候选池的问题；硬性授权或停用状态仍按原规则处理。
+- 修复 Luna Reserve 路由边界：仅显式请求 `gpt-reserve` 时，仍有 Reserve 额度的账号才进入 Reserve 候选池；普通 `gpt-5.6-luna` 仍走常规账号池，不会因 Reserve 可用而绕过已耗尽的标准 5h/7d 窗口；硬性授权或停用状态仍按原规则处理。
 
 ## [0.5.6] - 2026-09-02
 

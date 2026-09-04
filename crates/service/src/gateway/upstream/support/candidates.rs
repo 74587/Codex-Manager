@@ -1,6 +1,6 @@
 use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
 use codexmanager_core::usage::{has_usable_luna_reserve, is_luna_reserve_model};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::usage_account_meta::{derive_account_meta, patch_account_meta_in_place};
 
@@ -108,28 +108,14 @@ pub(crate) fn prepare_gateway_candidates(
         .map(|(account, _)| account.id)
         .collect::<Vec<_>>();
     // 中文注释：保持账号原始顺序（按账户排序字段）作为候选顺序，失败时再依次切下一个。
-    let mut candidates =
-        super::super::super::collect_gateway_candidates_for_account_ids_with_low_quota_mode(
-            storage,
-            &authorized_account_ids,
-            low_quota_mode,
-        )?;
-    if !reserve_model {
-        return Ok(candidates);
+    if reserve_model {
+        return collect_luna_reserve_candidates(storage, &authorized_account_ids, &snapshots);
     }
-
-    let reserve_candidates =
-        collect_luna_reserve_candidates(storage, &authorized_account_ids, &snapshots)?;
-    let mut seen = candidates
-        .iter()
-        .map(|(account, _)| account.id.clone())
-        .collect::<HashSet<_>>();
-    for candidate in reserve_candidates {
-        if seen.insert(candidate.0.id.clone()) {
-            candidates.push(candidate);
-        }
-    }
-    Ok(candidates)
+    super::super::super::collect_gateway_candidates_for_account_ids_with_low_quota_mode(
+        storage,
+        &authorized_account_ids,
+        low_quota_mode,
+    )
 }
 
 fn collect_luna_reserve_candidates(
@@ -184,18 +170,21 @@ fn request_exceeds_free_account_model_ceiling(
     else {
         return Ok(false);
     };
-    if ceiling.is_empty()
-        || ceiling.eq_ignore_ascii_case("auto")
-        || ceiling.eq_ignore_ascii_case(request_model)
-    {
+    if ceiling.is_empty() || ceiling.eq_ignore_ascii_case("auto") {
+        return Ok(false);
+    }
+
+    let ceiling_catalog_slug = crate::models_v2::policy_catalog_slug(ceiling);
+    let request_catalog_slug = crate::models_v2::policy_catalog_slug(request_model);
+    if ceiling_catalog_slug.eq_ignore_ascii_case(request_catalog_slug) {
         return Ok(false);
     }
 
     let ceiling_model = storage
-        .get_enabled_model_v2(ceiling)
+        .get_enabled_model_v2(ceiling_catalog_slug)
         .map_err(|err| format!("read free account model ceiling failed: {err}"))?;
     let request_model = storage
-        .get_enabled_model_v2(request_model)
+        .get_enabled_model_v2(request_catalog_slug)
         .map_err(|err| format!("read requested model rank failed: {err}"))?;
 
     // 中文注释：模型目录的 sort_order 越小优先级越高。未知模型无法证明未超过上限，

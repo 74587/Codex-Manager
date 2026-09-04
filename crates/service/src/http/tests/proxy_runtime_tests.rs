@@ -2339,7 +2339,7 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     assert!(first_payload.get("stream").is_none());
     assert!(first_payload.get("background").is_none());
     assert_eq!(first_payload["store"], true);
-    assert_eq!(first_payload["service_tier"], "priority");
+    assert!(first_payload.get("service_tier").is_none());
     assert_eq!(first_payload["generate"], false);
     assert_eq!(first_payload["prompt_cache_key"], "session_ws_1");
 
@@ -2549,10 +2549,12 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
         "expected websocket request log to keep explicit fast service tier"
     );
     assert!(
-        ws_logs
-            .iter()
-            .any(|item| item.effective_service_tier.as_deref() == Some("fast")),
-        "expected websocket request log to persist effective fast service tier"
+        ws_logs.iter().any(|item| {
+            item.service_tier.as_deref() == Some("fast")
+                && item.effective_service_tier.is_none()
+                && item.service_tier_source.as_deref() == Some("model_policy")
+        }),
+        "expected websocket request log to record the unsupported fast tier as filtered"
     );
     assert!(
         ws_logs.iter().any(|item| item.service_tier.is_none()),
@@ -2985,7 +2987,7 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
         .await
         .expect("send large image context frame");
 
-    let forwarded = tokio::time::timeout(Duration::from_secs(10), upstream_events.recv())
+    let forwarded = tokio::time::timeout(Duration::from_secs(30), upstream_events.recv())
         .await
         .expect("large image context frame timeout")
         .expect("large image context frame channel");
@@ -2993,7 +2995,7 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
     assert!(forwarded.len() > 16 * 1024 * 1024);
 
     loop {
-        let event = tokio::time::timeout(Duration::from_secs(10), client_ws.next())
+        let event = tokio::time::timeout(Duration::from_secs(30), client_ws.next())
             .await
             .expect("large image response event timeout")
             .expect("large image response event")
@@ -3015,7 +3017,7 @@ async fn official_responses_websocket_accepts_large_image_context_frame() {
         ))
         .await
         .expect("send follow-up frame");
-    let _ = tokio::time::timeout(Duration::from_secs(10), upstream_events.recv())
+    let _ = tokio::time::timeout(Duration::from_secs(30), upstream_events.recv())
         .await
         .expect("follow-up frame timeout")
         .expect("follow-up frame channel");

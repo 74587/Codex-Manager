@@ -107,6 +107,31 @@ fn capability<'a>(model: &'a ManagedModelV2, keys: &[&str]) -> Option<&'a Value>
     keys.iter().find_map(|key| model.capabilities.get(*key))
 }
 
+pub(crate) fn policy_catalog_slug(model_slug: &str) -> &str {
+    let model_slug = model_slug.trim();
+    if codexmanager_core::usage::is_luna_reserve_model(Some(model_slug)) {
+        codexmanager_core::usage::LUNA_MODEL_SLUG
+    } else {
+        model_slug
+    }
+}
+
+pub(crate) fn should_preserve_luna_reserve_alias(
+    request_model: Option<&str>,
+    configured_model: Option<&str>,
+) -> bool {
+    if !codexmanager_core::usage::is_luna_reserve_model(request_model) {
+        return false;
+    }
+    configured_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .is_none_or(|model| {
+            model.eq_ignore_ascii_case(codexmanager_core::usage::LUNA_MODEL_SLUG)
+                || codexmanager_core::usage::is_luna_reserve_model(Some(model))
+        })
+}
+
 pub(crate) fn supports_text_generation(model: &ManagedModelV2) -> bool {
     capability(
         model,
@@ -133,7 +158,7 @@ pub(crate) fn ensure_text_generation_model(
         return Ok(());
     };
     let Some(model) = storage
-        .get_managed_model_v2(slug)
+        .get_managed_model_v2(policy_catalog_slug(slug))
         .map_err(|err| format!("read managed model V2 failed: {err}"))?
     else {
         // Preserve existing behavior for external or not-yet-cataloged model slugs.
@@ -415,6 +440,12 @@ mod tests {
     use codexmanager_core::storage::Storage;
 
     #[test]
+    fn policy_catalog_slug_normalizes_reserve_alias_and_whitespace() {
+        assert_eq!(policy_catalog_slug(" GPT-RESERVE "), "gpt-5.6-luna");
+        assert_eq!(policy_catalog_slug(" gpt-5.4 "), "gpt-5.4");
+    }
+
+    #[test]
     fn image_model_is_exposed_with_capabilities_but_excluded_from_text_catalog() {
         let storage = Storage::open_in_memory().expect("open storage");
         storage.init().expect("init storage");
@@ -425,10 +456,10 @@ mod tests {
             .iter()
             .find(|model| model.slug == "gpt-5.6-sol")
             .expect("text model");
-        assert_eq!(text_model.shell_type.as_deref(), Some("shell_command"));
+        assert_eq!(text_model.shell_type.as_deref(), Some("unified_exec"));
         assert_eq!(text_model.base_instructions.as_deref(), Some(""));
         assert_eq!(text_model.effective_context_window_percent, Some(95));
-        assert_eq!(text_model.extra["max_context_window"], 372_000);
+        assert_eq!(text_model.extra["max_context_window"], 872_000);
         assert_eq!(text_model.extra["comp_hash"], "3000");
         assert_eq!(text_model.extra["tool_mode"], "code_mode_only");
         assert_eq!(text_model.extra["multi_agent_version"], "v2");

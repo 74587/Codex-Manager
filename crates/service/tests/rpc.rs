@@ -4590,5 +4590,10 @@ fn rpc_system_proxy_jobs_flow() {
     }
     assert!(cancelled, "Job was not cancelled successfully");
 
+    // The cancellation can win before the worker connects to the fake proxy.
+    // Unblock the mock listener so joining its thread cannot hang the test.
+    if let Some(proxy_socket_addr) = proxy_addr.strip_prefix("http://") {
+        let _ = TcpStream::connect(proxy_socket_addr);
+    }
     let _ = proxy_handle.join();
 }

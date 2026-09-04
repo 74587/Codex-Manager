@@ -102,6 +102,36 @@ fn parse_account_models(body: &Value) -> Vec<(String, Option<String>)> {
     parsed
 }
 
+fn account_fetched_model(
+    existing: &[ManagedModelV2],
+    upstream_model: String,
+    display_name: Option<String>,
+) -> AccountFetchedModel {
+    let catalog_slug = crate::models_v2::policy_catalog_slug(upstream_model.as_str());
+    let model = existing
+        .iter()
+        .find(|model| model.slug.eq_ignore_ascii_case(catalog_slug));
+    let already_linked = model.is_some_and(|model| {
+        model.routes.iter().any(|route| {
+            route.source_kind == ACCOUNT_POOL_SOURCE_KIND
+                && route.source_id == ACCOUNT_POOL_SOURCE_ID
+                && (route
+                    .upstream_model
+                    .eq_ignore_ascii_case(upstream_model.as_str())
+                    || crate::models_v2::should_preserve_luna_reserve_alias(
+                        Some(upstream_model.as_str()),
+                        Some(route.upstream_model.as_str()),
+                    ))
+        })
+    });
+    AccountFetchedModel {
+        upstream_model,
+        display_name,
+        existing_model_slug: model.map(|model| model.slug.clone()),
+        already_linked,
+    }
+}
+
 fn read_models_response(mut response: reqwest::blocking::Response) -> Result<Value, String> {
     let status = response.status();
     if response
@@ -231,24 +261,7 @@ pub(crate) fn fetch_account_models(account_id: &str) -> Result<AccountFetchModel
     let items = parsed
         .into_iter()
         .map(|(upstream_model, display_name)| {
-            let model = existing
-                .iter()
-                .find(|model| model.slug.eq_ignore_ascii_case(upstream_model.as_str()));
-            let already_linked = model.is_some_and(|model| {
-                model.routes.iter().any(|route| {
-                    route.source_kind == ACCOUNT_POOL_SOURCE_KIND
-                        && route.source_id == ACCOUNT_POOL_SOURCE_ID
-                        && route
-                            .upstream_model
-                            .eq_ignore_ascii_case(upstream_model.as_str())
-                })
-            });
-            AccountFetchedModel {
-                upstream_model,
-                display_name,
-                existing_model_slug: model.map(|model| model.slug.clone()),
-                already_linked,
-            }
+            account_fetched_model(existing.as_slice(), upstream_model, display_name)
         })
         .collect();
 
@@ -290,8 +303,9 @@ fn associate_account_models_with_storage(
         let Some(model) = normalize_model_id(raw.as_str()) else {
             return Err("invalid upstream model id".to_string());
         };
-        if seen.insert(model.to_ascii_lowercase()) {
-            requested.push(model);
+        let catalog_model = crate::models_v2::policy_catalog_slug(model.as_str()).to_string();
+        if seen.insert(catalog_model.to_ascii_lowercase()) {
+            requested.push((model, catalog_model));
         }
     }
     if requested.is_empty() {
@@ -310,10 +324,10 @@ fn associate_account_models_with_storage(
     let mut create_candidates = Vec::new();
     let mut route_inputs = Vec::new();
 
-    for upstream_model in &requested {
+    for (upstream_model, catalog_model) in &requested {
         if let Some(model) = models
             .iter()
-            .find(|model| model.slug.eq_ignore_ascii_case(upstream_model.as_str()))
+            .find(|model| model.slug.eq_ignore_ascii_case(catalog_model.as_str()))
         {
             let inherited = model
                 .routes
@@ -329,7 +343,13 @@ fn associate_account_models_with_storage(
                 route: ModelRouteV2 {
                     source_kind: ACCOUNT_POOL_SOURCE_KIND.to_string(),
                     source_id: ACCOUNT_POOL_SOURCE_ID.to_string(),
-                    upstream_model: upstream_model.clone(),
+                    upstream_model: if codexmanager_core::usage::is_luna_reserve_model(Some(
+                        upstream_model.as_str(),
+                    )) {
+                        model.slug.clone()
+                    } else {
+                        upstream_model.clone()
+                    },
                     enabled: true,
                     priority: inherited.0,
                     weight: inherited.1.max(1),
@@ -342,10 +362,15 @@ fn associate_account_models_with_storage(
         let display_name = display_names
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case(upstream_model.as_str()))
+            .or_else(|| {
+                display_names
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(catalog_model.as_str()))
+            })
             .and_then(|(_, value)| model_display_name_from_value(&json!({ "name": value })))
-            .unwrap_or_else(|| upstream_model.clone());
+            .unwrap_or_else(|| catalog_model.clone());
         let model = ManagedModelV2 {
-            slug: upstream_model.clone(),
+            slug: catalog_model.clone(),
             display_name,
             provider: Some("OpenAI".to_string()),
             origin: "custom".to_string(),
@@ -371,11 +396,11 @@ fn associate_account_models_with_storage(
             ..Default::default()
         });
         route_inputs.push(ManagedModelRouteEnsureV2 {
-            model_slug: upstream_model.clone(),
+            model_slug: catalog_model.clone(),
             route: ModelRouteV2 {
                 source_kind: ACCOUNT_POOL_SOURCE_KIND.to_string(),
                 source_id: ACCOUNT_POOL_SOURCE_ID.to_string(),
-                upstream_model: upstream_model.clone(),
+                upstream_model: catalog_model.clone(),
                 enabled: true,
                 priority: 0,
                 weight: 1,
@@ -438,6 +463,31 @@ mod tests {
             ("gpt-small".to_string(), Some("GPT Small".to_string()))
         );
         assert_eq!(parsed[2], ("gpt-string".to_string(), None));
+    }
+
+    #[test]
+    fn fetched_reserve_alias_uses_the_existing_luna_catalog_route() {
+        let mut luna = custom_model(codexmanager_core::usage::LUNA_MODEL_SLUG);
+        luna.routes.push(ModelRouteV2 {
+            source_kind: ACCOUNT_POOL_SOURCE_KIND.to_string(),
+            source_id: ACCOUNT_POOL_SOURCE_ID.to_string(),
+            upstream_model: codexmanager_core::usage::LUNA_MODEL_SLUG.to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+            ..Default::default()
+        });
+
+        let fetched = account_fetched_model(
+            &[luna],
+            codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG.to_string(),
+            Some("Luna Reserve".to_string()),
+        );
+        assert_eq!(
+            fetched.existing_model_slug.as_deref(),
+            Some(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        );
+        assert!(fetched.already_linked);
     }
 
     #[test]
@@ -556,5 +606,43 @@ mod tests {
             repeated.unchanged_routes,
             ["account-model-existing-test", "account-model-new-test"]
         );
+    }
+
+    #[test]
+    fn associates_reserve_alias_with_luna_without_creating_an_unreachable_model() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+
+        let result = associate_account_models_with_storage(
+            &storage,
+            vec![
+                codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG.to_string(),
+                codexmanager_core::usage::LUNA_MODEL_SLUG.to_string(),
+            ],
+            BTreeMap::new(),
+        )
+        .expect("associate reserve alias");
+
+        assert!(result.created_models.is_empty());
+        assert!(result.added_routes.is_empty());
+        assert_eq!(
+            result.unchanged_routes,
+            [codexmanager_core::usage::LUNA_MODEL_SLUG]
+        );
+        assert!(storage
+            .get_managed_model_v2(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG)
+            .expect("read reserve alias")
+            .is_none());
+        let luna = storage
+            .get_managed_model_v2(codexmanager_core::usage::LUNA_MODEL_SLUG)
+            .expect("read Luna")
+            .expect("Luna exists");
+        assert!(luna.routes.iter().any(|route| {
+            route.source_kind == ACCOUNT_POOL_SOURCE_KIND
+                && route.source_id == ACCOUNT_POOL_SOURCE_ID
+                && route
+                    .upstream_model
+                    .eq_ignore_ascii_case(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        }));
     }
 }

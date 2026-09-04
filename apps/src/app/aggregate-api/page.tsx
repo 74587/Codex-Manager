@@ -64,6 +64,13 @@ import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
+import {
+  buildAggregateApiListQueryKey,
+  buildApiKeyListQueryKey,
+  buildManagedModelListQueryKey,
+  buildManagedModelSelectorQueryKey,
+  normalizeQueryServiceAddress,
+} from "@/lib/api/account-query-keys";
 import { appClient } from "@/lib/api/app-client";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { aggregateApiProviderMatchesFilter } from "@/lib/aggregate-api-provider";
@@ -128,6 +135,17 @@ export default function AggregateApiPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
+  const serviceAddr = normalizeQueryServiceAddress(serviceStatus.addr);
+  const aggregateApiListQueryKey = buildAggregateApiListQueryKey(serviceAddr);
+  const apiKeyListQueryKey = buildApiKeyListQueryKey(serviceAddr);
+  const managedModelListQueryKey = buildManagedModelListQueryKey(serviceAddr, true);
+  const managedModelPublicListQueryKey = buildManagedModelListQueryKey(
+    serviceAddr,
+    false,
+  );
+  const managedModelSelectorQueryKey =
+    buildManagedModelSelectorQueryKey(serviceAddr);
+  const startupSnapshotQueryKey = ["startup-snapshot", serviceAddr] as const;
   const appSettings = useAppStore((state) => state.appSettings);
   const setAppSettings = useAppStore((state) => state.setAppSettings);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
@@ -159,8 +177,8 @@ export default function AggregateApiPage() {
   const [probeUserAgent, setProbeUserAgent] = useState("");
 
   const { data: aggregateApis = [], isLoading } = useQuery({
-    queryKey: ["aggregate-apis"],
-    queryFn: () => accountClient.listAggregateApis(),
+    queryKey: aggregateApiListQueryKey,
+    queryFn: () => accountClient.listAggregateApis(serviceAddr),
     enabled: isQueryEnabled,
     staleTime: 60_000,
     retry: 1,
@@ -180,6 +198,23 @@ export default function AggregateApiPage() {
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [isPageActive]);
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setModalOpen(false);
+      setAssociationApiId(null);
+      setAssociationItems([]);
+      setEditingId(null);
+      setDeleteId(null);
+      setRevealedSecrets({});
+      setProbeSettingsOpen(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [serviceAddr]);
 
   const editingApi = useMemo(
     () => aggregateApis.find((api) => api.id === editingId) || null,
@@ -207,13 +242,16 @@ export default function AggregateApiPage() {
   const failedCount = aggregateApis.filter((api) => api.lastTestStatus === "failed").length;
 
   const deleteMutation = useMutation({
-    mutationFn: (apiId: string) => accountClient.deleteAggregateApi(apiId),
+    mutationFn: (apiId: string) =>
+      accountClient.deleteAggregateApi(apiId, serviceAddr),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
-        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
-        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
-        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: aggregateApiListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: managedModelListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: managedModelPublicListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: managedModelSelectorQueryKey }),
+        queryClient.invalidateQueries({ queryKey: apiKeyListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
       ]);
       toast.success(t("聚合 API 已删除"));
     },
@@ -223,7 +261,8 @@ export default function AggregateApiPage() {
   });
 
   const testMutation = useMutation({
-    mutationFn: (apiId: string) => accountClient.testAggregateApiConnection(apiId),
+    mutationFn: (apiId: string) =>
+      accountClient.testAggregateApiConnection(apiId, serviceAddr),
     onMutate: (apiId) => setTestingApiId(apiId),
     onSuccess: (result) => {
       if (result.ok) {
@@ -234,7 +273,7 @@ export default function AggregateApiPage() {
     },
     onSettled: async (_result, _error, apiId) => {
       setTestingApiId((current) => (current === apiId ? null : current));
-      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await queryClient.invalidateQueries({ queryKey: aggregateApiListQueryKey });
     },
   });
 
@@ -262,7 +301,8 @@ export default function AggregateApiPage() {
   };
 
   const balanceMutation = useMutation({
-    mutationFn: (apiId: string) => accountClient.refreshAggregateApiBalance(apiId),
+    mutationFn: (apiId: string) =>
+      accountClient.refreshAggregateApiBalance(apiId, serviceAddr),
     onMutate: (apiId) => setRefreshingBalanceId(apiId),
     onSuccess: (result) => {
       if (result.ok) toast.success(t("余额已刷新"));
@@ -270,7 +310,7 @@ export default function AggregateApiPage() {
     },
     onSettled: async (_result, _error, apiId) => {
       setRefreshingBalanceId((current) => (current === apiId ? null : current));
-      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      await queryClient.invalidateQueries({ queryKey: aggregateApiListQueryKey });
     },
   });
 
@@ -279,13 +319,13 @@ export default function AggregateApiPage() {
       accountClient.updateAggregateApi(api.id, {
         supplierName: api.supplierName || api.url,
         status: enabled ? "active" : "disabled",
-      }),
+      }, serviceAddr),
     onMutate: ({ api }) => setTogglingApiId(api.id),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
-        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
-        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+        queryClient.invalidateQueries({ queryKey: aggregateApiListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: apiKeyListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
       ]);
       toast.success(t("状态已更新"));
     },
@@ -306,7 +346,7 @@ export default function AggregateApiPage() {
     }
     setLoadingSecretId(apiId);
     try {
-      const secret = await accountClient.readAggregateApiSecret(apiId);
+      const secret = await accountClient.readAggregateApiSecret(apiId, serviceAddr);
       setRevealedSecrets((current) => ({ ...current, [apiId]: secret }));
     } catch (error) {
       toast.error(`${t("读取密钥失败")}: ${error instanceof Error ? error.message : String(error)}`);
@@ -322,7 +362,7 @@ export default function AggregateApiPage() {
   const openAssociation = async (apiId: string) => {
     setFetchingModelsApiId(apiId);
     try {
-      const result = await accountClient.fetchAggregateApiModels(apiId);
+      const result = await accountClient.fetchAggregateApiModels(apiId, serviceAddr);
       setAssociationApiId(apiId);
       setAssociationItems(result.items);
     } catch (error) {
@@ -346,12 +386,15 @@ export default function AggregateApiPage() {
         associationApiId,
         upstreamModels,
         displayNames,
+        serviceAddr,
       );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] }),
-        queryClient.invalidateQueries({ queryKey: ["managed-models-v2"] }),
-        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
-        queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
+        queryClient.invalidateQueries({ queryKey: aggregateApiListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: managedModelListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: managedModelPublicListQueryKey }),
+        queryClient.invalidateQueries({ queryKey: managedModelSelectorQueryKey }),
+        queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
+        queryClient.invalidateQueries({ queryKey: apiKeyListQueryKey }),
       ]);
       toast.success(t("关联完成：新增模型 {created}，追加 route {added}，未变更 {unchanged}", {
         created: result.createdModels.length,
@@ -584,10 +627,12 @@ export default function AggregateApiPage() {
       </PageWorkspace>
 
       <AggregateApiModal
+        key={serviceAddr || "default"}
         open={modalOpen}
         onOpenChange={setModalOpen}
         aggregateApi={editingApi}
         defaultSort={defaultCreateSort}
+        serviceAddr={serviceAddr}
       />
 
       <Dialog open={probeSettingsOpen} onOpenChange={setProbeSettingsOpen}>

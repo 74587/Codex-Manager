@@ -64,10 +64,7 @@ fn normalized_identifier(value: &str) -> String {
 
 fn is_luna_reserve_identifier(value: &str) -> bool {
     let normalized = normalized_identifier(value);
-    normalized.contains("gptreserve")
-        || normalized.contains("lunareserve")
-        || normalized.contains("basemodelinference")
-        || (normalized.contains("luna") && normalized.contains("reserve"))
+    matches!(normalized.as_str(), "gptreserve" | "lunareserve")
 }
 
 fn is_extra_rate_limit_key(key: &str) -> bool {
@@ -261,10 +258,26 @@ fn rate_limit_entry_identifier(entry: &Value) -> impl Iterator<Item = &str> {
         .filter_map(|key| entry.get(key).and_then(Value::as_str))
 }
 
-fn rate_limit_window_is_usable(window: Option<&Value>) -> bool {
+fn rate_limit_reset_at_seconds(value: &Value) -> Option<i64> {
+    let mut timestamp = value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))?;
+    if timestamp > 1_000_000_000_000 {
+        timestamp /= 1000;
+    }
+    Some(timestamp)
+}
+
+fn rate_limit_window_is_usable_at(window: Option<&Value>, now: i64) -> bool {
     let Some(window) = window.and_then(Value::as_object) else {
         return false;
     };
+    if let Some(reset_at) = object_value(window, &["reset_at", "resetAt"]) {
+        if !rate_limit_reset_at_seconds(reset_at).is_some_and(|reset_at| reset_at > now) {
+            return false;
+        }
+    }
     if let Some(remaining) =
         object_value(window, &["remaining_percent", "remainingPercent"]).and_then(Value::as_f64)
     {
@@ -275,7 +288,7 @@ fn rate_limit_window_is_usable(window: Option<&Value>) -> bool {
         .is_some_and(|used| used < 100.0)
 }
 
-fn rate_limit_entry_is_usable(entry: &Value) -> bool {
+fn rate_limit_entry_is_usable_at(entry: &Value, now: i64) -> bool {
     let Some(obj) = entry.as_object() else {
         return false;
     };
@@ -291,12 +304,13 @@ fn rate_limit_entry_is_usable(entry: &Value) -> bool {
     {
         return false;
     }
-    rate_limit_window_is_usable(obj.get("primary_window"))
-        || rate_limit_window_is_usable(obj.get("secondary_window"))
+    rate_limit_window_is_usable_at(obj.get("primary_window"), now)
+        || rate_limit_window_is_usable_at(obj.get("secondary_window"), now)
 }
 
-/// Returns whether a stored usage payload contains a usable Luna Reserve window.
-pub fn has_usable_luna_reserve(credits_json: Option<&str>) -> bool {
+/// Returns whether a stored usage payload contains a Luna Reserve window that
+/// is usable at the supplied Unix timestamp.
+pub fn has_usable_luna_reserve_at(credits_json: Option<&str>, now: i64) -> bool {
     let Some(raw) = credits_json.map(str::trim).filter(|raw| !raw.is_empty()) else {
         return false;
     };
@@ -305,8 +319,15 @@ pub fn has_usable_luna_reserve(credits_json: Option<&str>) -> bool {
     };
     collect_extra_rate_limits(&value).iter().any(|entry| {
         rate_limit_entry_identifier(entry).any(is_luna_reserve_identifier)
-            && rate_limit_entry_is_usable(entry)
+            && rate_limit_entry_is_usable_at(entry, now)
     })
+}
+
+/// Returns whether a stored usage payload contains a currently usable Luna
+/// Reserve window. Missing reset timestamps retain the legacy capacity-only
+/// behavior, while an explicit invalid or expired timestamp fails closed.
+pub fn has_usable_luna_reserve(credits_json: Option<&str>) -> bool {
+    has_usable_luna_reserve_at(credits_json, crate::storage::now_ts())
 }
 
 fn extra_rate_limit_identifiers(entry: &Value) -> Vec<String> {
@@ -395,13 +416,15 @@ pub fn merge_missing_extra_rate_limits(
     Some(Value::Object(current).to_string())
 }
 
-/// Returns whether a request model is eligible for the Luna Reserve candidate pool.
+pub const LUNA_RESERVE_MODEL_SLUG: &str = "gpt-reserve";
+pub const LUNA_MODEL_SLUG: &str = "gpt-5.6-luna";
+
+/// Returns whether a request model is the explicit Luna Reserve alias.
 pub fn is_luna_reserve_model(model: Option<&str>) -> bool {
     let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
         return false;
     };
-    let normalized = normalized_identifier(model);
-    normalized.contains("luna") || normalized.contains("gptreserve")
+    model.eq_ignore_ascii_case(LUNA_RESERVE_MODEL_SLUG)
 }
 
 fn serialize_credits_payload(
