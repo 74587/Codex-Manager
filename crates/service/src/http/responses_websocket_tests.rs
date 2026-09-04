@@ -1,13 +1,14 @@
 use super::{
     apply_model_fast_policy_with_storage, build_socks5_connect_request,
     build_upstream_websocket_request, infer_ws_terminal_status, inspect_ws_terminal_event,
-    is_previous_response_not_found_terminal, merge_client_metadata,
+    is_previous_response_not_found_terminal, load_ws_tool_call_registry, merge_client_metadata,
     missing_ws_tool_call_from_terminal, parse_websocket_target, parse_ws_usage,
     prepare_missing_ws_tool_call_retry, proxy_basic_auth_header,
-    rebase_ws_request_for_account_change, rewrite_client_frame, should_attempt_ws_terminal_retry,
-    should_buffer_ws_upstream_preamble, strip_previous_response_id_from_ws_text,
-    ws_request_has_tool_call_output, ws_route_binding_for_frame, CompletedWsResponseCache,
-    CompletedWsToolCallCache, WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
+    rebase_ws_request_for_account_change, remember_ws_tool_calls_from_upstream_event,
+    rewrite_client_frame, should_attempt_ws_terminal_retry, should_buffer_ws_upstream_preamble,
+    strip_previous_response_id_from_ws_text, ws_request_has_tool_call_output,
+    ws_route_binding_for_frame, CompletedWsResponseCache, CompletedWsToolCallCache,
+    WsRequestContext, WsToolCallKind, WsUpstreamAuthorization,
 };
 use axum::http::{HeaderMap, HeaderValue};
 use codexmanager_core::storage::{
@@ -241,6 +242,95 @@ fn websocket_terminal_retry_ignores_preamble_but_stops_after_real_output() {
     );
     assert!(!should_attempt_ws_terminal_retry(400, true));
     assert!(!should_attempt_ws_terminal_retry(200, false));
+}
+
+#[test]
+fn websocket_stale_tool_output_after_task_boundary_recovers_from_call_registry() {
+    let _guard = crate::test_env_guard();
+    let session_id = format!("stale-tool-output-{}-{}", std::process::id(), now_ts());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "session_id",
+        HeaderValue::from_str(session_id.as_str()).expect("session header"),
+    );
+    let context = WsRequestContext {
+        api_key: sample_api_key(),
+        incoming_headers: crate::gateway::IncomingHeaderSnapshot::from_http_headers(&headers),
+        prompt_cache_key: None,
+        cache_affinity_key: Some(session_id),
+        route_conversation_id: None,
+        route_conversation_source: None,
+        effective_upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+        prefer_raw_errors: false,
+    };
+    let seed = rewrite_client_frame(
+        r#"{"type":"response.create","model":"gpt-5.4","prompt_cache_key":"per-task-cache-key","input":"run cleanup"}"#,
+        &context,
+    )
+    .expect("rewrite seed response.create");
+    remember_ws_tool_calls_from_upstream_event(
+        &context,
+        &seed,
+        &json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "custom_tool_call",
+                "id": "ctc_stale_task",
+                "call_id": "call_stale_task",
+                "name": "exec",
+                "input": "{}"
+            }
+        })
+        .to_string(),
+    );
+
+    // This is the exact failure shape: a new task sends the completed tool output,
+    // but no matching custom_tool_call exists in that task's input context.
+    let stale_request = rewrite_client_frame(
+        &json!({
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": [{
+                "type": "custom_tool_call_output",
+                "call_id": "call_stale_task",
+                "output": [
+                    {"type": "input_text", "text": "Script completed\nWall time: 0.2 seconds\nOutput:\n"},
+                    {"type": "input_text", "text": "MANIFESTS_REFRESHED=PASS"}
+                ]
+            }]
+        })
+        .to_string()
+        .as_str(),
+        &context,
+    )
+    .expect("rewrite stale task response.create");
+    assert!(stale_request.previous_response_id.is_none());
+    assert!(ws_request_has_tool_call_output(stale_request.text.as_str()));
+
+    let cached = load_ws_tool_call_registry(&context, &stale_request)
+        .expect("tool-call registry must survive the frontend task boundary");
+    let terminal = inspect_ws_terminal_event(
+        r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","code":null,"message":"No tool call found for custom tool call output with call_id call_stale_task.","param":"input"}}"#,
+    )
+    .expect("exact upstream missing-tool terminal");
+    let mut already_retried = false;
+    let recovered = prepare_missing_ws_tool_call_retry(
+        stale_request.text.as_str(),
+        &cached,
+        &terminal,
+        &mut already_retried,
+    )
+    .expect("prepare stale-task recovery")
+    .expect("cached call must make the stale output self-contained");
+    let value: Value = serde_json::from_str(recovered.as_str()).expect("parse recovered request");
+    let input = value["input"].as_array().expect("recovered input array");
+    assert!(already_retried);
+    assert_eq!(input.len(), 2);
+    assert_eq!(input[0]["type"], "custom_tool_call");
+    assert_eq!(input[0]["call_id"], "call_stale_task");
+    assert_eq!(input[1]["type"], "custom_tool_call_output");
+    assert_eq!(input[1]["call_id"], "call_stale_task");
+    assert_eq!(input[1]["output"][1]["text"], "MANIFESTS_REFRESHED=PASS");
 }
 
 fn sample_account() -> Account {
