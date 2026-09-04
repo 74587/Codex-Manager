@@ -796,15 +796,31 @@ fn usage_http_default_headers_follow_gateway_runtime_profile() {
 /// 无
 #[test]
 fn usage_request_headers_use_official_chatgpt_account_header_name() {
-    let headers = build_usage_request_headers(Some("workspace_123"), false);
+    let headers = build_usage_request_headers(Some("account_123"), false);
 
     assert_eq!(
         headers
             .get(CHATGPT_ACCOUNT_ID_HEADER_NAME)
             .and_then(|value| value.to_str().ok()),
-        Some("workspace_123")
+        Some("account_123")
     );
-    assert_eq!(headers.len(), 1);
+    assert_eq!(
+        headers
+            .get("x-openai-codex-luna-reserve")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
+    assert_eq!(
+        headers.get("pragma").and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
+    assert_eq!(headers.len(), 4);
 }
 
 #[test]
@@ -817,7 +833,14 @@ fn usage_request_headers_include_fedramp_context_when_enabled() {
             .and_then(|value| value.to_str().ok()),
         Some("true")
     );
-    assert_eq!(headers.len(), 2);
+    assert!(headers.get("x-openai-codex-luna-reserve").is_none());
+    assert_eq!(
+        headers
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
+    assert_eq!(headers.len(), 4);
 }
 
 #[test]
@@ -1130,6 +1153,9 @@ fn fetch_usage_snapshot_with_explicit_proxy_uses_explicit_proxy_before_global_pr
     assert!(request.starts_with("get http://chatgpt.test/"));
     assert!(request.contains("authorization: bearer token_123"));
     assert!(request.contains("chatgpt-account-id: workspace_123"));
+    assert!(request.contains("x-openai-codex-luna-reserve: 1"));
+    assert!(request.contains("cache-control: no-cache"));
+    assert!(request.contains("pragma: no-cache"));
     assert_eq!(snapshot["gpt4"]["usedPercent"], 12.5);
 }
 
@@ -1435,7 +1461,11 @@ fn legacy_usage_request_ignores_proxy_pool_when_account_proxy_is_disabled() {
             .recv_timeout(Duration::from_secs(5))
             .expect("usage server timeout")
             .expect("receive legacy usage request");
-        tx.send(request.url().to_string())
+        let has_luna_reserve_header = request
+            .headers()
+            .iter()
+            .any(|header| header.field.equiv("x-openai-codex-luna-reserve"));
+        tx.send((request.url().to_string(), has_luna_reserve_header))
             .expect("send legacy usage path");
         let response =
             Response::from_string(r#"{"gpt4":{"usedPercent":99.0,"windowMinutes":180}}"#)
@@ -1451,11 +1481,11 @@ fn legacy_usage_request_ignores_proxy_pool_when_account_proxy_is_disabled() {
         .expect("fetch legacy usage");
 
     assert_eq!(snapshot["gpt4"]["usedPercent"], 99.0);
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5))
-            .expect("receive legacy usage path"),
-        "/api/codex/usage"
-    );
+    let (path, has_luna_reserve_header) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive legacy usage path");
+    assert_eq!(path, "/api/codex/usage");
+    assert!(has_luna_reserve_header);
     assert!(proxy_rx.recv_timeout(Duration::from_millis(300)).is_err());
     handle.join().expect("join legacy usage server");
     proxy_handle.join().expect("join unused proxy");

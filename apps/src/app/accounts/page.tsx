@@ -140,6 +140,7 @@ export default function AccountsPage() {
   const [tagsDraft, setTagsDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [sortDraft, setSortDraft] = useState("");
+  const [forceEnabledDraft, setForceEnabledDraft] = useState(false);
   const [quotaPrimaryDraft, setQuotaPrimaryDraft] = useState("");
   const [quotaSecondaryDraft, setQuotaSecondaryDraft] = useState("");
   const [proxyDialogAccount, setProxyDialogAccount] = useState<Account | null>(null);
@@ -684,6 +685,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       currentTags: account.tags.join(", "),
       currentNote: account.note || "",
       currentSort: account.priority,
+      currentForceEnabled: account.status.trim().toLowerCase() === "force_enabled",
       currentQuotaPrimaryWindowTokens: account.quotaCapacityPrimaryWindowTokens,
       currentQuotaSecondaryWindowTokens: account.quotaCapacitySecondaryWindowTokens,
     });
@@ -692,6 +694,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
     setTagsDraft(account.tags.join(", "));
     setNoteDraft(account.note || "");
     setSortDraft(String(account.priority));
+    setForceEnabledDraft(account.status.trim().toLowerCase() === "force_enabled");
     setQuotaPrimaryDraft(
       account.quotaCapacityPrimaryWindowTokens == null
         ? ""
@@ -702,6 +705,20 @@ const toggleCleanupStatus = (rawStatus: string) => {
         ? ""
         : String(account.quotaCapacitySecondaryWindowTokens),
     );
+  };
+
+  const handleToggleForceEnabled = async (account: Account) => {
+    const normalizedStatus = account.status.trim().toLowerCase();
+    if (["disabled", "inactive", "unavailable", "banned"].includes(normalizedStatus)) {
+      return;
+    }
+    try {
+      await updateAccountProfile(account.id, {
+        status: normalizedStatus === "force_enabled" ? "active" : "force_enabled",
+      });
+    } catch {
+      // mutation 已统一处理 toast，这里保持菜单状态不变
+    }
   };
 
   // 顶部/底部按全量列表定位，上移/下移仍按当前筛选结果取相邻账号。
@@ -848,6 +865,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       nextTagsText === accountEditorState.currentTags &&
       nextNote === accountEditorState.currentNote &&
       nextSort === accountEditorState.currentSort &&
+      forceEnabledDraft === accountEditorState.currentForceEnabled &&
       nextPrimaryCapacity === accountEditorState.currentQuotaPrimaryWindowTokens &&
       nextSecondaryCapacity === accountEditorState.currentQuotaSecondaryWindowTokens
     ) {
@@ -862,6 +880,12 @@ const toggleCleanupStatus = (rawStatus: string) => {
         note: nextNote || null,
         tags: nextTags,
         sort: nextSort,
+        status:
+          forceEnabledDraft === accountEditorState.currentForceEnabled
+            ? undefined
+            : forceEnabledDraft
+              ? "force_enabled"
+              : "active",
         quotaCapacityPrimaryWindowTokens: nextPrimaryCapacity ?? 0,
         quotaCapacitySecondaryWindowTokens: nextSecondaryCapacity ?? 0,
       });
@@ -930,6 +954,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       tagsDraft={tagsDraft}
       noteDraft={noteDraft}
       sortDraft={sortDraft}
+      forceEnabledDraft={forceEnabledDraft}
       quotaPrimaryDraft={quotaPrimaryDraft}
       quotaSecondaryDraft={quotaSecondaryDraft}
       isRefreshingAllAccounts={isRefreshingAllAccounts}
@@ -968,6 +993,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       setTagsDraft={setTagsDraft}
       setNoteDraft={setNoteDraft}
       setSortDraft={setSortDraft}
+      setForceEnabledDraft={setForceEnabledDraft}
       setQuotaPrimaryDraft={setQuotaPrimaryDraft}
       setQuotaSecondaryDraft={setQuotaSecondaryDraft}
       setPage={setPage}
@@ -1011,6 +1037,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       refreshAccount={refreshAccount}
       clearPreferredAccount={clearPreferredAccount}
       setPreferredAccount={setPreferredAccount}
+      toggleForceEnabled={handleToggleForceEnabled}
       toggleAccountStatus={toggleAccountStatus}
     />
   );
