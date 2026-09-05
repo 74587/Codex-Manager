@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-05
+
+### Fixed
+
+- 修复订阅查询新增 User-Agent 后触发网页防护、导致额度刷新失败并进一步显示 Token 授权错误的回归；订阅查询恢复不设置 User-Agent。
+- 额度查询和 Token 刷新恢复标准 Codex User-Agent，不再继承自定义网关 User-Agent，覆盖默认代理和账号独立代理路径。
+
+### Changed
+
+- 发布版本提升到 `0.6.0`，同步 workspace、前端、Tauri 桌面端和锁文件；沿用已有账号与设置存储。
+- `release-all` 将五个平台的服务端构建与桌面构建并行，保留原有桌面、Service、Web 和 Docker 产物；按 Cargo 工作区隔离构建缓存，推荐从主分支发起固定提交的发布以复用跨版本缓存。
+
 ## [0.5.7] - 2026-09-05
 
 ### Added

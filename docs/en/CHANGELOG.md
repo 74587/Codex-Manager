@@ -5,6 +5,18 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-05
+
+### Fixed
+
+- Fixed a regression where a newly added subscription User-Agent triggered web protection, interrupted quota refresh, and surfaced a subsequent token authorization error. Subscription requests no longer set User-Agent.
+- Restored the standard Codex User-Agent for quota queries and token refresh, independent of custom gateway overrides, including default and account-specific proxy routes.
+
+### Changed
+
+- Bumped the workspace, frontend, Tauri desktop metadata, and lockfiles to `0.6.0`, retaining existing account and settings storage.
+- `release-all` now builds service and desktop artifacts concurrently across five platform targets while preserving Desktop, Service, Web, and Docker assets. Caches are separated by Cargo workspace; dispatching a pinned release commit from the default branch enables cache reuse across versions.
+
 ## [0.5.7] - 2026-09-05
 
 ### Added
