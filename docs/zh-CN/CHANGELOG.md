@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- 修复 Responses WebSocket 的工具输出续接：同一工具调用的重复输出会在上游发送前去重，连接前导事件不再错误消耗终止恢复机会，并可在跨任务续接时有界补回缺失的工具调用上下文（#458）。
 - 修复 Luna Reserve 用量在后续刷新或暂态空列表后从账号页消失的问题，并统一兼容附加额度的 snake_case/camelCase 返回结构。
 - 修复 Luna Reserve 路由边界：仅显式请求 `gpt-reserve` 时，仍有 Reserve 额度的账号才进入 Reserve 候选池；普通 `gpt-5.6-luna` 仍走常规账号池，不会因 Reserve 可用而绕过已耗尽的标准 5h/7d 窗口；硬性授权或停用状态仍按原规则处理。
 
