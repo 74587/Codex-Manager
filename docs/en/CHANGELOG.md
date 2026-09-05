@@ -5,6 +5,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-09-05
+
 ### Added
 
 - Added a **Keep using account after quota exhaustion** switch to the account editor. It persists as `force_enabled`, is off by default, and keeps the account in the gateway candidate pool for manual quota handling.
@@ -12,6 +14,10 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 - Added a remembered table/card view switch to the accounts page. Administrators can fetch upstream models for one explicitly selected ChatGPT account using that account's credentials, account identifier, and proxy, then selectively associate them with model catalog V2 account-pool routes without account-pool rotation.
 - Added Standard and Ultrafast API-key service tiers across Responses HTTP, WebSocket, and request logs. Standard uses the upstream default speed and is logged as `standard`, Fast maps to `priority`, and Ultrafast passes through unchanged; Flex remains accepted for compatibility, while actual availability still depends on the model and upstream.
 - Added configurable outbound gateway `User-Agent` handling: `gateway.user_agent` applies globally, per-connection `aggregate_apis.user_agent` takes priority for aggregate route forwarding, model discovery, probes, and balance requests, and unset values fall back to the dynamically generated Codex-compatible `User-Agent` (#459).
+
+### Changed
+
+- Bumped the release version to `0.5.7` and synchronized the workspace, frontend package, Tauri desktop metadata, and lockfiles.
 
 ### Fixed
 

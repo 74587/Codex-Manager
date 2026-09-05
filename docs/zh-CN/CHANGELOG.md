@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-09-05
+
 ### Added
 
 - 账号编辑器新增“额度耗尽后仍使用账号”开关，持久化为 `force_enabled`，默认关闭；开启后该账号仍可参与网关候选，适合需要人工接管额度判定的场景。
@@ -12,6 +14,10 @@
 - 账号页新增会记住选择的表格/卡片视图切换；管理员可针对明确选中的 ChatGPT 账号，使用该账号的凭据、账号标识与代理拉取上游模型，并选择性关联到模型目录 V2 的账号池路由，不会在账号池中轮转请求。
 - API Key 服务等级新增 Standard 与 Ultrafast，并贯通 Responses HTTP、WebSocket 和请求日志：Standard 使用上游默认速度并记为 `standard`，Fast 映射为 `priority`，Ultrafast 原值透传；继续接受 Flex 以保持兼容，实际可用等级仍由模型与上游决定。
 - 新增可配置的网关出站 `User-Agent`：`gateway.user_agent` 全局生效，单个聚合 API 的 `aggregate_apis.user_agent` 在真实 route 转发、模型拉取、连通性测试和余额查询中优先；两者均未设置时动态生成 Codex-compatible 默认值（#459）。
+
+### Changed
+
+- 发布版本提升到 `0.5.7`，同步更新 workspace、前端包、Tauri 桌面端与锁文件。
 
 ### Fixed
 
