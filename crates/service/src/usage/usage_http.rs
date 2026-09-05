@@ -582,6 +582,8 @@ fn format_refresh_token_status_error_with_headers(
 /// # 返回
 /// 返回函数执行结果
 fn build_usage_http_client() -> Client {
+    // Account maintenance uses the standard Codex identity, independently of
+    // the custom User-Agent configured for gateway forwarding.
     let default_headers = build_usage_http_default_headers();
     let builder = Client::builder()
         // 中文注释：轮询链路复用连接池可降低握手开销；不复用会在多账号刷新时放大短连接抖动。
@@ -589,7 +591,7 @@ fn build_usage_http_client() -> Client {
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(8)
         .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(crate::gateway::current_gateway_user_agent())
+        .user_agent(crate::gateway::current_codex_user_agent())
         .default_headers(default_headers);
     let builder = crate::gateway::apply_async_upstream_proxy(
         builder,
@@ -599,12 +601,13 @@ fn build_usage_http_client() -> Client {
     builder.build().unwrap_or_else(|_| Client::new())
 }
 fn build_subscription_http_client() -> Client {
+    // Keep accounts/check on its browser endpoint header profile. A Codex
+    // User-Agent can trigger a Cloudflare challenge and an unnecessary token refresh.
     let builder = Client::builder()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(crate::gateway::current_gateway_user_agent());
+        .pool_idle_timeout(Some(Duration::from_secs(60)));
     let builder = crate::gateway::apply_async_upstream_proxy(
         builder,
         current_upstream_proxy_url().as_deref(),
@@ -1795,7 +1798,7 @@ fn build_usage_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(8)
         .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(crate::gateway::current_gateway_user_agent())
+        .user_agent(crate::gateway::current_codex_user_agent())
         .default_headers(build_usage_http_default_headers());
     let builder = builder.proxy(
         Proxy::all(proxy_url).map_err(|err| format!("build explicit usage proxy failed: {err}"))?,
@@ -1806,12 +1809,13 @@ fn build_usage_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client
 }
 
 fn build_subscription_http_client_with_explicit_proxy(proxy_url: &str) -> Result<Client, String> {
+    // Match the subscription client above; gateway User-Agent overrides must
+    // not reach accounts/check through an account proxy either.
     let builder = Client::builder()
         .connect_timeout(USAGE_HTTP_CONNECT_TIMEOUT)
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(crate::gateway::current_gateway_user_agent());
+        .pool_idle_timeout(Some(Duration::from_secs(60)));
     let builder = builder.proxy(
         Proxy::all(proxy_url)
             .map_err(|err| format!("build explicit subscription proxy failed: {err}"))?,
@@ -1827,7 +1831,7 @@ fn build_token_refresh_http_client_with_explicit_proxy(proxy_url: &str) -> Resul
         .timeout(USAGE_HTTP_TOTAL_TIMEOUT)
         .pool_max_idle_per_host(8)
         .pool_idle_timeout(Some(Duration::from_secs(60)))
-        .user_agent(crate::gateway::current_gateway_user_agent())
+        .user_agent(crate::gateway::current_codex_user_agent())
         .default_headers(build_usage_http_default_headers());
     let builder = builder.proxy(
         Proxy::all(proxy_url)

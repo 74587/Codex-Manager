@@ -686,7 +686,7 @@ Gemini 模型同样在模型目录 V2 中手工新增并配置 route；管理员
 
 ### User-Agent 优先级与适用范围
 
-出站 `User-Agent` 统一按以下顺序解析，命中后不再继续回退：
+网关和聚合 API 的出站 `User-Agent` 按以下顺序解析，命中后不再继续回退：
 
 | 优先级 | 配置入口 | 持久化位置 | 适用范围 |
 | --- | --- | --- | --- |
@@ -699,6 +699,8 @@ Gemini 模型同样在模型目录 V2 中手工新增并配置 route；管理员
 ```text
 aggregate_apis.user_agent > gateway.user_agent > 动态 Codex 默认 User-Agent
 ```
+
+ChatGPT 账号的额度查询和 Token 刷新使用标准 Codex User-Agent，不继承上述自定义覆盖；网页订阅查询 `/accounts/check/v4-2023-04-27` 不设置 User-Agent，避免触发网页防护并影响额度刷新。
 
 两个自定义值都遵循相同校验规则：保存前去除首尾空白，空值表示清除覆盖并继承下一层；最多 512 bytes，不能包含控制字符，并且必须是合法的 HTTP header 值。
 
