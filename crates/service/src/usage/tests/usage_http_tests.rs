@@ -1160,6 +1160,49 @@ fn fetch_usage_snapshot_with_explicit_proxy_uses_explicit_proxy_before_global_pr
 }
 
 #[test]
+fn changing_gateway_user_agent_rebuilds_cached_usage_client() {
+    let _guard = crate::test_env_guard();
+    let (first_proxy_url, first_request_rx, first_proxy_handle) = spawn_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":1.0,"windowMinutes":180}}"#,
+        "application/json",
+    );
+    let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", &first_proxy_url);
+    crate::gateway::set_gateway_user_agent(Some("Cached-Client/1.0"))
+        .expect("set initial gateway user agent");
+
+    super::fetch_usage_snapshot("http://chatgpt.test", "token_123", None)
+        .expect("fetch with initial cached client");
+    let first_request = first_request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture initial usage request")
+        .to_ascii_lowercase();
+    first_proxy_handle.join().expect("join initial usage proxy");
+    assert!(first_request.contains("user-agent: cached-client/1.0"));
+
+    let (second_proxy_url, second_request_rx, second_proxy_handle) = spawn_recording_http_proxy(
+        r#"{"gpt4":{"usedPercent":2.0,"windowMinutes":180}}"#,
+        "application/json",
+    );
+    std::env::set_var("CODEXMANAGER_UPSTREAM_PROXY_URL", &second_proxy_url);
+    crate::gateway::set_gateway_user_agent(Some("Cached-Client/2.0"))
+        .expect("update gateway user agent");
+
+    super::fetch_usage_snapshot("http://chatgpt.test", "token_123", None)
+        .expect("fetch with rebuilt cached client");
+    let second_request = second_request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("capture rebuilt usage request")
+        .to_ascii_lowercase();
+    second_proxy_handle
+        .join()
+        .expect("join rebuilt usage proxy");
+    assert!(second_request.contains("user-agent: cached-client/2.0"));
+
+    drop(_global_proxy);
+    crate::gateway::set_gateway_user_agent(None).expect("clear gateway user agent");
+}
+
+#[test]
 fn fetch_usage_snapshot_preserves_agent_assertion_authorization() {
     let _guard = crate::test_env_guard();
     let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
@@ -1309,6 +1352,8 @@ fn success_body_read_failure_does_not_reclassify_redeem_as_failed() {
 #[test]
 fn fetch_account_subscription_with_explicit_proxy_uses_explicit_proxy_before_global_proxy() {
     let _guard = crate::test_env_guard();
+    crate::gateway::set_gateway_user_agent(None).expect("clear gateway user agent");
+    let expected_user_agent = crate::gateway::current_gateway_user_agent().to_ascii_lowercase();
     let _global_proxy = EnvVarRestore::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "http://127.0.0.1:1");
     super::reload_usage_http_client_from_env();
     let (proxy_url, request_rx, proxy_handle) = spawn_recording_http_proxy(
@@ -1333,7 +1378,7 @@ fn fetch_account_subscription_with_explicit_proxy_uses_explicit_proxy_before_glo
     assert!(request.starts_with("get http://chatgpt.test/"));
     assert!(request.contains("authorization: bearer token_123"));
     assert!(request.contains("origin: https://chatgpt.com"));
-    assert!(!request.contains("user-agent:"));
+    assert!(request.contains(format!("user-agent: {expected_user_agent}").as_str()));
     assert!(snapshot.has_subscription);
     assert_eq!(snapshot.account_plan_type.as_deref(), Some("pro"));
 }

@@ -11,6 +11,7 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 - Added `gpt-6-astra` to the default model catalog. Revision 8 seeds fresh and upgraded databases with its official API limits and cache-write-aware pricing, Codex runtime metadata, and the default account-pool route, while preserving same-slug custom models and user-edited builtins.
 - Added a remembered table/card view switch to the accounts page. Administrators can fetch upstream models for one explicitly selected ChatGPT account using that account's credentials, account identifier, and proxy, then selectively associate them with model catalog V2 account-pool routes without account-pool rotation.
 - Added Standard and Ultrafast API-key service tiers across Responses HTTP, WebSocket, and request logs. Standard uses the upstream default speed and is logged as `standard`, Fast maps to `priority`, and Ultrafast passes through unchanged; Flex remains accepted for compatibility, while actual availability still depends on the model and upstream.
+- Added configurable outbound gateway `User-Agent` handling: `gateway.user_agent` applies globally, per-connection `aggregate_apis.user_agent` takes priority for aggregate route forwarding, model discovery, probes, and balance requests, and unset values fall back to the dynamically generated Codex-compatible `User-Agent` (#459).
 
 ### Fixed
 

@@ -238,7 +238,7 @@ pub(crate) fn fetch_account_models(account_id: &str) -> Result<AccountFetchModel
         )
         .header(ACCEPT, "application/json")
         .header(ACCEPT_ENCODING, "identity")
-        .header(USER_AGENT, crate::gateway::current_codex_user_agent())
+        .header(USER_AGENT, crate::gateway::current_gateway_user_agent())
         .header("originator", crate::gateway::current_wire_originator());
     if let Some(chatgpt_account_id) = account
         .chatgpt_account_id

@@ -724,7 +724,12 @@ pub(crate) fn default_codex_user_agent_version() -> &'static str {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn set_originator(originator: &str) -> Result<String, String> {
-    runtime_config::set_originator(originator)
+    let previous_user_agent = runtime_config::current_gateway_user_agent();
+    let applied = runtime_config::set_originator(originator)?;
+    if runtime_config::current_gateway_user_agent() != previous_user_agent {
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+    Ok(applied)
 }
 
 /// 函数 `set_codex_user_agent_version`
@@ -739,7 +744,12 @@ pub(crate) fn set_originator(originator: &str) -> Result<String, String> {
 /// # 返回
 /// 返回函数执行结果
 pub(crate) fn set_codex_user_agent_version(version: &str) -> Result<String, String> {
-    runtime_config::set_codex_user_agent_version(version)
+    let previous_user_agent = runtime_config::current_gateway_user_agent();
+    let applied = runtime_config::set_codex_user_agent_version(version)?;
+    if runtime_config::current_gateway_user_agent() != previous_user_agent {
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+    Ok(applied)
 }
 
 /// 函数 `current_residency_requirement`
@@ -785,6 +795,23 @@ pub(crate) fn set_residency_requirement(value: Option<&str>) -> Result<Option<St
 /// 返回函数执行结果
 pub(crate) fn current_codex_user_agent() -> String {
     runtime_config::current_codex_user_agent()
+}
+
+pub(crate) fn set_gateway_user_agent(value: Option<&str>) -> Result<Option<String>, String> {
+    let previous_user_agent = runtime_config::current_gateway_user_agent();
+    let applied = runtime_config::set_gateway_user_agent(value)?;
+    if runtime_config::current_gateway_user_agent() != previous_user_agent {
+        crate::usage_http::reload_usage_http_client_from_env();
+    }
+    Ok(applied)
+}
+
+pub(crate) fn current_gateway_user_agent_override() -> Option<String> {
+    runtime_config::current_gateway_user_agent_override()
+}
+
+pub(crate) fn current_gateway_user_agent() -> String {
+    runtime_config::current_gateway_user_agent()
 }
 
 /// 函数 `set_free_account_max_model`

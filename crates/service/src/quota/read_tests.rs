@@ -81,6 +81,7 @@ fn aggregate_api(id: &str, balance_json: Option<&str>, now: i64) -> AggregateApi
         auth_params_json: None,
         action: None,
         model_override: None,
+        user_agent: None,
         status: "active".to_string(),
         created_at: now,
         updated_at: now,

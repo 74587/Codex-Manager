@@ -3026,7 +3026,7 @@ fn build_upstream_websocket_request(
     insert_header(
         headers,
         "User-Agent",
-        &crate::gateway::current_codex_user_agent(),
+        &crate::gateway::current_gateway_user_agent(),
     )?;
     insert_header(
         headers,

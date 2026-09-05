@@ -120,6 +120,7 @@ export function AggregateApiModal({
   const [supplierName, setSupplierName] = useState("");
   const [sortDraft, setSortDraft] = useState("0");
   const [url, setUrl] = useState("");
+  const [userAgent, setUserAgent] = useState("");
   const [authType, setAuthType] = useState<"apikey" | "userpass">("apikey");
   const [authCustomEnabled, setAuthCustomEnabled] = useState(false);
   const [apiKeyLocation, setApiKeyLocation] = useState<"header" | "query">(
@@ -184,6 +185,7 @@ export function AggregateApiModal({
     setSupplierName(aggregateApi?.supplierName || "");
     setSortDraft(String(aggregateApi?.sort ?? defaultSort));
     setUrl(aggregateApi?.url || "");
+    setUserAgent(aggregateApi?.userAgent || "");
     const nextAuthType =
       aggregateApi?.authType === "userpass" ? "userpass" : "apikey";
     setAuthType(nextAuthType);
@@ -420,6 +422,7 @@ export function AggregateApiModal({
           supplierName,
           sort: parsedSort,
           url,
+          userAgent: userAgent.trim(),
           key: authType === "apikey" ? key || null : null,
           authType,
           authCustomEnabled,
@@ -454,6 +457,7 @@ export function AggregateApiModal({
         supplierName,
         sort: parsedSort,
         url,
+        userAgent: userAgent.trim(),
         key: authType === "apikey" ? key : null,
         authType,
         authCustomEnabled,
@@ -670,6 +674,24 @@ export function AggregateApiModal({
                   disabled={!isServiceReady}
                   onChange={(event) => setUrl(event.target.value)}
                 />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="aggregate-api-user-agent">
+                  {t("单独 User-Agent")}
+                </Label>
+                <Input
+                  id="aggregate-api-user-agent"
+                  className="font-mono"
+                  value={userAgent}
+                  maxLength={512}
+                  disabled={!isServiceReady}
+                  placeholder={t("留空继承网关全局 User-Agent")}
+                  onChange={(event) => setUserAgent(event.target.value)}
+                />
+                <p className="text-[11px] leading-4 text-muted-foreground">
+                  {t("仅用于当前聚合 API；留空时继承网关全局设置。优先级：当前聚合 API > 网关全局 > Codex 默认值。")}
+                </p>
               </div>
 
               {authType === "apikey" ? (

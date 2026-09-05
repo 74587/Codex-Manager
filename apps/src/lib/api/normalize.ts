@@ -47,6 +47,7 @@ import {
 } from "@/types";
 import {
   DEFAULT_CODEX_ORIGINATOR,
+  DEFAULT_CODEX_USER_AGENT,
   DEFAULT_CODEX_USER_AGENT_VERSION,
 } from "@/lib/constants/codex";
 import {
@@ -847,6 +848,7 @@ export function normalizeAggregateApi(item: unknown): AggregateApi | null {
     supplierName: asString(source.supplierName ?? source.supplier_name) || null,
     sort: asInteger(source.sort ?? source.priority, 0, 0),
     url: asString(source.url),
+    userAgent: asString(source.userAgent ?? source.user_agent) || null,
     authType: asString(source.authType ?? source.auth_type) || "apikey",
     authParams:
       source.authParams && typeof source.authParams === "object"
@@ -1859,14 +1861,18 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
       source.threadAwareAccountDistributionEnabled,
       true
     ),
-    aggregateApiProbeUserAgentMode:
-      asString(source.aggregateApiProbeUserAgentMode) || "codex",
-    aggregateApiProbeUserAgent: asString(source.aggregateApiProbeUserAgent),
     quotaGuard: normalizeQuotaGuard(source.quotaGuard ?? source.quota_guard),
     gatewayOriginator:
       asString(source.gatewayOriginator) || DEFAULT_CODEX_ORIGINATOR,
     gatewayOriginatorDefault:
       asString(source.gatewayOriginatorDefault) || DEFAULT_CODEX_ORIGINATOR,
+    gatewayUserAgent: asString(
+      source.gatewayUserAgent ?? source.gateway_user_agent
+    ),
+    gatewayUserAgentDefault:
+      asString(
+        source.gatewayUserAgentDefault ?? source.gateway_user_agent_default
+      ) || DEFAULT_CODEX_USER_AGENT,
     gatewayUserAgentVersion:
       asString(source.gatewayUserAgentVersion) || DEFAULT_CODEX_USER_AGENT_VERSION,
     gatewayUserAgentVersionDefault:

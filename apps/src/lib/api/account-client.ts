@@ -196,6 +196,7 @@ interface AggregateApiPayload {
   sort?: number | null;
   status?: string | null;
   url?: string | null;
+  userAgent?: string | null;
   key?: string | null;
   authType?: string | null;
   authCustomEnabled?: boolean | null;
@@ -861,6 +862,8 @@ export const accountClient = {
         sort: typeof params.sort === "number" ? params.sort : null,
         status: params.status || null,
         url: params.url || null,
+        userAgent:
+          typeof params.userAgent === "string" ? params.userAgent : null,
         key: params.key || null,
         authType: params.authType || null,
         authCustomEnabled:
@@ -912,6 +915,8 @@ export const accountClient = {
         sort: typeof params.sort === "number" ? params.sort : null,
         status: params.status || null,
         url: params.url || null,
+        userAgent:
+          typeof params.userAgent === "string" ? params.userAgent : null,
         key: params.key || null,
         authType: params.authType || null,
         authCustomEnabled:
