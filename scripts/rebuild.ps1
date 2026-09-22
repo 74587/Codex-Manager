@@ -93,6 +93,25 @@ function Write-Step {
 #>
 function Remove-Dir {
   param([string]$Path)
+  $workspacePath = [IO.Path]::GetFullPath($root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $candidatePath = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+  $relativePath = [IO.Path]::GetRelativePath($workspacePath, $candidatePath)
+  $configuredTarget = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($targetDir).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) } else { $null }
+  $isExplicitExternalTarget = $null -ne $configuredTarget -and $candidatePath -eq $configuredTarget
+  $workspaceFromCandidate = [IO.Path]::GetRelativePath($candidatePath, $workspacePath)
+  $candidateIsAncestor = $workspaceFromCandidate -eq "." -or
+    (-not $workspaceFromCandidate.StartsWith("..", [StringComparison]::Ordinal) -and -not [IO.Path]::IsPathRooted($workspaceFromCandidate))
+  $candidateIsFilesystemRoot = [string]::Equals($candidatePath, [IO.Path]::GetPathRoot($candidatePath).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
+  if ($candidateIsFilesystemRoot -or $candidateIsAncestor -or
+      (-not $isExplicitExternalTarget -and ($relativePath.StartsWith("..", [StringComparison]::Ordinal) -or [IO.Path]::IsPathRooted($relativePath)))) {
+    throw "refusing to recursively remove a path outside the repository build tree: $candidatePath"
+  }
+  if (Test-Path -LiteralPath $candidatePath) {
+    $item = Get-Item -LiteralPath $candidatePath -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "refusing to recursively remove a reparse point: $candidatePath"
+    }
+  }
   if (-not (Test-Path $Path)) {
     Write-Step "skip: $Path not found"
     return
@@ -101,10 +120,7 @@ function Remove-Dir {
     Write-Step "DRY RUN: remove $Path"
     return
   }
-  & cmd /c "rmdir /s /q `"$Path`""
-  if ($LASTEXITCODE -ne 0) {
-    throw "failed to remove $Path"
-  }
+  Remove-Item -LiteralPath $candidatePath -Recurse -Force
 }
 
 <#
