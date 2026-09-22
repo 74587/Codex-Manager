@@ -539,7 +539,8 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.0
 [0.5.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.1...v0.5.2

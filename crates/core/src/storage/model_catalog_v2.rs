@@ -388,7 +388,7 @@ fn validate_route(route: &ModelRouteV2) -> Result<()> {
     Ok(())
 }
 
-fn validate_model(model: &ManagedModelV2) -> Result<()> {
+pub fn validate_managed_model_v2(model: &ManagedModelV2) -> Result<()> {
     if model.slug.trim().is_empty() || model.display_name.trim().is_empty() {
         return Err(rusqlite::Error::InvalidParameterName(
             "model slug and display name are required".to_string(),
@@ -1213,7 +1213,7 @@ fn write_model(tx: &Transaction<'_>, input: &ManagedModelV2Upsert) -> Result<Str
     model.family = clean_optional(model.family);
     model.category = clean_optional(model.category);
     model.instructions_text = clean_optional(model.instructions_text);
-    validate_model(&model)?;
+    validate_managed_model_v2(&model)?;
 
     let previous = input.previous_slug.as_deref().unwrap_or(&model.slug).trim();
     let existing = tx
@@ -1397,7 +1397,7 @@ impl Storage {
             params![MIGRATION_VERSION, now_ts()],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(MIGRATION_VERSION.to_string());
         }
         Ok(())
@@ -1446,7 +1446,7 @@ impl Storage {
             params![GPT56_PRICING_MIGRATION_VERSION, now_ts()],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(GPT56_PRICING_MIGRATION_VERSION.to_string());
         }
         Ok(())
@@ -1496,7 +1496,7 @@ impl Storage {
             params![CODEX_METADATA_MIGRATION_VERSION, now],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(CODEX_METADATA_MIGRATION_VERSION.to_string());
         }
         Ok(())
@@ -1577,7 +1577,7 @@ impl Storage {
             params![GPT56_OFFICIAL_PRICING_MIGRATION_VERSION, now_ts()],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(GPT56_OFFICIAL_PRICING_MIGRATION_VERSION.to_string());
         }
         Ok(())
@@ -1673,7 +1673,7 @@ impl Storage {
             params![GPT56_CURRENT_PRICING_MIGRATION_VERSION, now_ts()],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(GPT56_CURRENT_PRICING_MIGRATION_VERSION.to_string());
         }
         Ok(())
@@ -1832,7 +1832,7 @@ impl Storage {
             params![GPT6_ASTRA_MIGRATION_VERSION, now],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(GPT6_ASTRA_MIGRATION_VERSION.to_string());
         }
         Ok(())
@@ -2892,7 +2892,7 @@ mod tests {
                 [GPT6_ASTRA_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute("DELETE FROM models WHERE slug=?1", [GPT6_ASTRA_SLUG])
@@ -3024,7 +3024,7 @@ mod tests {
                 [GPT56_METADATA_FIX_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
 
         let astra_migration_applied: i64 = storage
             .conn
@@ -3070,7 +3070,7 @@ mod tests {
                 [GPT56_METADATA_FIX_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .apply_model_catalog_gpt56_metadata_fix_migration()
             .unwrap();
@@ -3115,7 +3115,7 @@ mod tests {
                 [GPT56_METADATA_FIX_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
 
         storage
             .apply_model_catalog_gpt56_metadata_fix_migration()
@@ -3161,7 +3161,7 @@ mod tests {
                 [GPT56_METADATA_FIX_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
 
         storage
             .apply_model_catalog_gpt56_metadata_fix_migration()
@@ -3225,7 +3225,7 @@ mod tests {
                 [GPT6_ASTRA_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
 
         storage.apply_model_catalog_gpt6_astra_migration().unwrap();
         storage.apply_model_catalog_gpt6_astra_migration().unwrap();
@@ -3263,7 +3263,7 @@ mod tests {
                 [GPT6_ASTRA_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute(
@@ -3315,7 +3315,7 @@ mod tests {
                 [GPT6_ASTRA_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute(
@@ -3421,7 +3421,7 @@ mod tests {
                 [GPT6_ASTRA_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute(
@@ -3501,7 +3501,7 @@ mod tests {
                 [GPT56_PRICING_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
 
         for slug in ["gpt-5.6-sol", "gpt-5.6-terra"] {
             storage
@@ -3573,7 +3573,7 @@ mod tests {
                 [GPT56_OFFICIAL_PRICING_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute_batch(
@@ -3710,7 +3710,7 @@ mod tests {
                 [GPT56_CURRENT_PRICING_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute_batch(
@@ -3883,7 +3883,7 @@ mod tests {
                 [CODEX_METADATA_MIGRATION_VERSION],
             )
             .unwrap();
-        storage.applied_migrations.borrow_mut().take();
+        storage.migration_cache().take();
         storage
             .conn
             .execute(

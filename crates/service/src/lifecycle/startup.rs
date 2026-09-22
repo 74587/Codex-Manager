@@ -40,17 +40,46 @@ pub fn start_one_shot_server() -> std::io::Result<ServerHandle> {
     crate::storage_helpers::initialize_storage()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     crate::sync_runtime_settings_from_storage();
-    let server = tiny_http::Server::http("127.0.0.1:0")
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    let addr = server
-        .server_addr()
-        .to_ip()
-        .map(|a| a.to_string())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "server addr missing"))?;
+    // Integration tests use exactly the production Axum router, including its
+    // authentication, body limits, streaming adapters and cancellation paths.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let addr = listener.local_addr()?.to_string();
+    let runtime = crate::http::proxy_runtime::front_proxy_runtime()?;
     let join = thread::spawn(move || {
-        if let Some(request) = server.incoming_requests().next() {
-            crate::http::backend_router::handle_backend_request(request);
-        }
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).expect("listener runtime");
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let shutdown = std::sync::Arc::new(std::sync::Mutex::new(Some(shutdown)));
+            let app = crate::http::router::build_router(crate::http::router::AppState::new())
+                .layer(axum::middleware::from_fn(
+                    move |request, next: axum::middleware::Next| {
+                        let shutdown = shutdown.clone();
+                        async move {
+                            let response = next.run(request).await;
+                            if let Some(shutdown) = shutdown
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .take()
+                            {
+                                let _ = shutdown.send(());
+                            }
+                            response
+                        }
+                    },
+                ));
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await;
+            // Deferred delivery owns accounting after the HTTP body finishes,
+            // including a disconnected client. Wait before this listener exits.
+            crate::gateway::drain_deferred_responses().await;
+        });
     });
     Ok(ServerHandle { addr, join })
 }

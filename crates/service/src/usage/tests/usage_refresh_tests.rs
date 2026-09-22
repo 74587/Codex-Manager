@@ -4,8 +4,8 @@ use super::{
     refresh_usage_for_account_result, reset_usage_poll_cursor_for_tests,
     resolve_token_refresh_issuer, run_token_refresh_task, set_usage_refresh_completed_handler,
     should_retry_usage_refresh_with_token, subscribe_usage_refresh_completed,
-    token_refresh_access_exp_cutoff, token_refresh_due_cutoff, token_refresh_schedule,
-    usage_poll_batch_indices,
+    subscribe_usage_refresh_completed_async, token_refresh_access_exp_cutoff,
+    token_refresh_due_cutoff, token_refresh_schedule, usage_poll_batch_indices,
 };
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -90,6 +90,21 @@ fn usage_refresh_completed_subscriber_receives_notification() {
 }
 
 #[test]
+fn usage_refresh_async_and_legacy_subscribers_receive_same_notification() {
+    let _guard = crate::test_env_guard();
+    let legacy = subscribe_usage_refresh_completed();
+    let mut receiver = subscribe_usage_refresh_completed_async();
+
+    notify_usage_refresh_completed("async-and-legacy", 3, 4);
+    let asynchronous = receiver.try_recv().expect("async usage event");
+    let synchronous = legacy.try_recv().expect("legacy usage event");
+    assert_eq!(asynchronous.source, synchronous.source);
+    assert_eq!(asynchronous.processed, 3);
+    assert_eq!(asynchronous.total, 4);
+    assert_eq!(asynchronous.completed_at, synchronous.completed_at);
+}
+
+#[test]
 fn refresh_usage_for_account_result_reports_missing_token() {
     let _guard = crate::test_env_guard();
     let db_path = unique_temp_db_path("usage-refresh-missing-token");
@@ -128,8 +143,8 @@ fn refresh_usage_for_account_result_reports_missing_token() {
     let _ = std::fs::remove_file(&db_path);
 }
 
-#[test]
-fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_check() {
+#[tokio::test(flavor = "current_thread")]
+async fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_check() {
     let _guard = crate::test_env_guard();
     let db_path = unique_temp_db_path("usage-refresh-agent-identity");
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", &db_path);
@@ -142,6 +157,8 @@ fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_check(
     let _base_url_guard = EnvGuard::set("CODEXMANAGER_USAGE_BASE_URL", &base_url);
     crate::usage_http::reload_usage_http_client_from_env();
     let (request_tx, request_rx) = mpsc::channel();
+    let (request_started_tx, request_started_rx) = tokio::sync::oneshot::channel();
+    let (release_response_tx, release_response_rx) = mpsc::channel();
     let server_handle = thread::spawn(move || {
         let request = server
             .recv_timeout(Duration::from_secs(5))
@@ -160,6 +177,10 @@ fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_check(
         request_tx
             .send((request.url().to_string(), authorization, workspace))
             .expect("record usage request");
+        request_started_tx.send(()).expect("signal request started");
+        release_response_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("async executor remains available during HTTP");
         request
             .respond(
                 Response::from_string(r#"{"gpt4":{"usedPercent":8.0,"windowMinutes":180}}"#)
@@ -218,7 +239,17 @@ fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_check(
             .expect("insert agent identity");
     }
 
-    let result = refresh_usage_for_account_result(account_id).expect("refresh agent usage");
+    let (result, ()) = tokio::join!(
+        super::refresh_usage_for_account_result_async(account_id),
+        async move {
+            request_started_rx.await.expect("request started");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            release_response_tx
+                .send(())
+                .expect("release provider response");
+        }
+    );
+    let result = result.expect("refresh agent usage");
     let (path, authorization, workspace) = request_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("receive recorded usage request");
@@ -722,4 +753,81 @@ fn usage_poll_cursor_advances_by_processed_count() {
     assert_eq!(next_usage_poll_cursor(5, 4, 2), 1);
     assert_eq!(next_usage_poll_cursor(5, 1, 5), 1);
     assert_eq!(next_usage_poll_cursor(0, 7, 3), 0);
+}
+
+#[test]
+fn usage_background_loops_and_queue_restart_after_shutdown() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    let _env = crate::test_env_guard();
+    struct ClearShutdown;
+    impl Drop for ClearShutdown {
+        fn drop(&mut self) {
+            crate::clear_shutdown_flag();
+        }
+    }
+    let _clear = ClearShutdown;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        crate::clear_shutdown_flag();
+        for cycle in 0..2 {
+            let (loop_started_tx, mut loop_started_rx) = tokio::sync::mpsc::unbounded_channel();
+            super::start_background_loop("usage-restart-fixture", &STARTED, move || {
+                let sender = loop_started_tx.clone();
+                async move {
+                    sender.send(()).unwrap();
+                    super::runner::wait_for_shutdown().await;
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(2), loop_started_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(STARTED.load(Ordering::Acquire));
+            let (queue_started_tx, queue_started_rx) = tokio::sync::oneshot::channel();
+            let dropped = std::sync::Arc::new(AtomicBool::new(false));
+            struct DropFlag(std::sync::Arc<AtomicBool>);
+            impl Drop for DropFlag {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            let drop_flag = DropFlag(dropped.clone());
+            assert!(
+                super::queue::enqueue_usage_refresh_async(
+                    "restart-fixture-account",
+                    move |_| async move {
+                        let _flag = drop_flag;
+                        queue_started_tx.send(()).unwrap();
+                        std::future::pending::<()>().await;
+                    }
+                ),
+                "queue accepts after restart, cycle={cycle}"
+            );
+            tokio::time::timeout(Duration::from_secs(2), queue_started_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            crate::request_shutdown("");
+            assert!(!super::queue::enqueue_usage_refresh_async(
+                "shutdown-rejected",
+                |_| async {}
+            ));
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                super::drain_usage_background_tasks(),
+            )
+            .await
+            .expect("background tasks drain on shutdown");
+            assert!(!STARTED.load(Ordering::Acquire), "loop start marker resets");
+            assert!(
+                dropped.load(Ordering::Acquire),
+                "active queue future is cancelled before shutdown returns"
+            );
+            crate::clear_shutdown_flag();
+        }
+    });
 }

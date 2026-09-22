@@ -5,12 +5,29 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 const OFFICIAL_CATALOG_CACHE_DIR: &str = "official-model-catalogs";
 const OFFICIAL_CATALOG_CACHE_TTL_SECS: i64 = 300;
 static OFFICIAL_CATALOG_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static CATALOG_PHASE_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
+async fn catalog_phase<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let permit = CATALOG_PHASE_WORKERS
+        .acquire()
+        .await
+        .map_err(|_| "Codex catalog workers unavailable".to_owned())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|error| format!("Codex catalog worker failed: {error}"))?
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayCatalogPolicy {
@@ -22,8 +39,7 @@ pub(crate) fn gateway_catalog_policy_for_api_key(
     storage: &Storage,
     api_key_id: &str,
 ) -> Result<GatewayCatalogPolicy, String> {
-    let api_key = storage
-        .find_api_key_by_id(api_key_id)
+    let api_key = crate::apikey::remote::find_by_id(storage, api_key_id)
         .map_err(|err| format!("read api key routing config failed: {err}"))?
         .ok_or_else(|| "api key not found".to_string())?;
     Ok(gateway_catalog_policy_for_rotation_strategy(
@@ -45,13 +61,27 @@ pub(crate) fn models_response_for_gateway_key(
     storage: &Storage,
     api_key_id: &str,
 ) -> Result<(ModelsResponse, GatewayCatalogPolicy), String> {
-    let policy = gateway_catalog_policy_for_api_key(storage, api_key_id)?;
+    crate::gateway::run_upstream_io(models_response_for_gateway_key_async(storage, api_key_id))?
+}
+
+pub(crate) async fn models_response_for_gateway_key_async(
+    storage: &Storage,
+    api_key_id: &str,
+) -> Result<(ModelsResponse, GatewayCatalogPolicy), String> {
+    let owned_storage = storage.shared_handle();
+    let owned_key = api_key_id.to_owned();
+    let policy =
+        catalog_phase(move || gateway_catalog_policy_for_api_key(&owned_storage, &owned_key))
+            .await?;
     let response = match policy {
         GatewayCatalogPolicy::OfficialAccountPool => {
-            let value = load_or_sync_official_model_catalog(storage, api_key_id)?;
-            official_models_response_from_value(value)?
+            let value = load_or_sync_official_model_catalog(storage, api_key_id).await?;
+            catalog_phase(move || official_models_response_from_value(value)).await?
         }
-        GatewayCatalogPolicy::Managed => crate::models_v2::models_response_with_storage(storage)?,
+        GatewayCatalogPolicy::Managed => {
+            let storage = storage.shared_handle();
+            catalog_phase(move || crate::models_v2::models_response_with_storage(&storage)).await?
+        }
     };
     Ok((response, policy))
 }
@@ -68,34 +98,81 @@ pub(crate) fn write_gateway_model_catalog(
     catalog_path: &Path,
     policy: GatewayCatalogPolicy,
 ) -> Result<usize, String> {
-    let (content, models_count) = match policy {
-        GatewayCatalogPolicy::OfficialAccountPool => {
-            let official_cache = load_or_sync_official_model_catalog(storage, api_key_id)?;
-            let official_models = official_model_catalog_from_value(&official_cache)?;
-            let models_count = official_models.len();
-            (
-                serialize_account_pool_model_catalog(&official_models)?,
-                models_count,
-            )
-        }
-        GatewayCatalogPolicy::Managed => {
-            let catalog = crate::models_v2::text_generation_models_response_with_storage(storage)?;
-            let models_count = catalog.models.len();
-            (serialize_gateway_model_catalog(&catalog)?, models_count)
-        }
-    };
-    write_atomic(catalog_path, &content)?;
+    crate::gateway::run_upstream_io(write_gateway_model_catalog_async(
+        storage,
+        api_key_id,
+        catalog_path,
+        policy,
+    ))?
+}
+
+pub(crate) async fn write_gateway_model_catalog_async(
+    storage: &Storage,
+    api_key_id: &str,
+    catalog_path: &Path,
+    policy: GatewayCatalogPolicy,
+) -> Result<usize, String> {
+    let (content, models_count) =
+        gateway_model_catalog_content_async(storage, api_key_id, policy).await?;
+    let catalog_path = catalog_path.to_owned();
+    catalog_phase(move || write_atomic(&catalog_path, &content)).await?;
     Ok(models_count)
 }
 
-fn load_or_sync_official_model_catalog(
+pub(crate) async fn gateway_model_catalog_content_async(
+    storage: &Storage,
+    api_key_id: &str,
+    policy: GatewayCatalogPolicy,
+) -> Result<(String, usize), String> {
+    match policy {
+        GatewayCatalogPolicy::OfficialAccountPool => {
+            let official_cache = load_or_sync_official_model_catalog(storage, api_key_id).await?;
+            catalog_phase(move || {
+                let official_models = official_model_catalog_from_value(&official_cache)?;
+                let models_count = official_models.len();
+                Ok((
+                    serialize_account_pool_model_catalog(&official_models)?,
+                    models_count,
+                ))
+            })
+            .await
+        }
+        GatewayCatalogPolicy::Managed => {
+            let storage = storage.shared_handle();
+            catalog_phase(move || {
+                let catalog =
+                    crate::models_v2::text_generation_models_response_with_storage(&storage)?;
+                let models_count = catalog.models.len();
+                Ok((serialize_gateway_model_catalog(&catalog)?, models_count))
+            })
+            .await
+        }
+    }
+}
+
+async fn load_official_snapshot_async(
+    cache_path: &Path,
+    client_version: &str,
+) -> Result<Option<Value>, String> {
+    let cache_path = cache_path.to_owned();
+    let client_version = client_version.to_owned();
+    catalog_phase(move || {
+        Ok(load_compatible_official_snapshot(
+            &cache_path,
+            &client_version,
+        ))
+    })
+    .await
+}
+
+async fn load_or_sync_official_model_catalog(
     storage: &Storage,
     api_key_id: &str,
 ) -> Result<Value, String> {
     let client_version = crate::gateway::current_codex_user_agent_version();
     let cache_path = official_catalog_cache_path(api_key_id);
     let now = chrono::Utc::now().timestamp();
-    let cached = load_compatible_official_snapshot(&cache_path, &client_version);
+    let cached = load_official_snapshot_async(&cache_path, &client_version).await?;
     if cached
         .as_ref()
         .is_some_and(|value| official_snapshot_is_fresh(value, now))
@@ -104,10 +181,10 @@ fn load_or_sync_official_model_catalog(
     }
 
     let sync_lock = OFFICIAL_CATALOG_SYNC_LOCK.get_or_init(|| Mutex::new(()));
-    let _guard = crate::lock_utils::lock_recover(sync_lock, "official_catalog_sync");
+    let lease = Arc::new(sync_lock.lock().await);
 
     // Another caller may have completed the refresh while this caller waited for the lock.
-    let cached = load_compatible_official_snapshot(&cache_path, &client_version);
+    let cached = load_official_snapshot_async(&cache_path, &client_version).await?;
     if cached
         .as_ref()
         .is_some_and(|value| official_snapshot_is_fresh(value, chrono::Utc::now().timestamp()))
@@ -115,11 +192,16 @@ fn load_or_sync_official_model_catalog(
         return Ok(cached.expect("checked above"));
     }
 
-    match fetch_official_model_catalog(storage, api_key_id, &client_version) {
+    match fetch_official_model_catalog(storage, api_key_id, &client_version).await {
         Ok((response, etag)) => {
+            // A cancelled request must not release the sync lock before its
+            // already-started snapshot write commits on the disk worker.
+            catalog_phase(move || {
+            let _lease = lease;
             let snapshot = build_official_snapshot(response, &client_version, etag.as_deref())?;
             write_official_snapshot(&cache_path, &snapshot)?;
             Ok(snapshot)
+            }).await
         }
         Err(err) => match cached {
             Some(snapshot) => {
@@ -135,13 +217,15 @@ fn load_or_sync_official_model_catalog(
     }
 }
 
-fn fetch_official_model_catalog(
+async fn fetch_official_model_catalog(
     storage: &Storage,
     api_key_id: &str,
     client_version: &str,
 ) -> Result<(Value, Option<String>), String> {
-    let api_key = storage
-        .find_api_key_by_id(api_key_id)
+    let owned_storage = storage.shared_handle();
+    let api_key_id = api_key_id.to_owned();
+    let (upstream_base, routed) = catalog_phase(move || {
+    let api_key = crate::apikey::remote::find_by_id(&owned_storage, &api_key_id)
         .map_err(|err| format!("read api key routing config failed: {err}"))?
         .ok_or_else(|| "api key not found".to_string())?;
     let upstream_base = crate::gateway::gateway_resolve_effective_upstream_base(&api_key);
@@ -150,6 +234,11 @@ fn fetch_official_model_catalog(
             "account-pool model sync requires the official ChatGPT Codex backend, got {upstream_base}"
         ));
     }
+    let routed = crate::gateway::gateway_collect_routed_candidates_with_log_source(
+        &owned_storage, &api_key_id, None,
+    )?;
+    Ok((upstream_base, routed))
+    }).await?;
 
     let (models_url, _) =
         crate::gateway::gateway_compute_upstream_url(&upstream_base, "/v1/models");
@@ -159,19 +248,18 @@ fn fetch_official_model_catalog(
         .query_pairs_mut()
         .append_pair("client_version", client_version);
 
-    let routed = crate::gateway::gateway_collect_routed_candidates_with_log_source(
-        storage, api_key_id, None,
-    )?;
     if routed.candidates.is_empty() {
         return Err("no available OpenAI account for official model sync".to_string());
     }
 
     let mut errors = Vec::new();
     for (account, mut token) in routed.candidates {
-        let result = (|| {
-            let bearer =
-                crate::gateway::gateway_resolve_openai_bearer_token(storage, &account, &mut token)?;
-            let client = crate::gateway::upstream_client_for_account(account.id.as_str())?;
+        let result = async {
+            let bearer = crate::gateway::gateway_resolve_openai_bearer_token_async(
+                storage, &account, &mut token,
+            )
+            .await?;
+            let client = crate::gateway::async_upstream_client_for_account(account.id.as_str())?;
             let mut request = client
                 .get(models_url.clone())
                 .header(
@@ -187,10 +275,11 @@ fn fetch_official_model_catalog(
             }
             let response = request
                 .send()
+                .await
                 .map_err(|err| format!("request official Codex model endpoint failed: {err}"))?;
             if !response.status().is_success() {
                 let status = response.status();
-                let body = response.text().unwrap_or_default();
+                let body = response.text().await.unwrap_or_default();
                 return Err(format!(
                     "official Codex model endpoint returned {status}: {}",
                     truncate_error_body(&body)
@@ -201,12 +290,19 @@ fn fetch_official_model_catalog(
                 .get(ETAG)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string);
-            let value = response
-                .json::<Value>()
-                .map_err(|err| format!("decode official Codex model response failed: {err}"))?;
-            official_model_catalog_from_value(&value)?;
-            Ok((value, response_etag))
-        })();
+            let body = response
+                .bytes()
+                .await
+                .map_err(|err| format!("read official Codex model response failed: {err}"))?;
+            catalog_phase(move || {
+                let value = serde_json::from_slice::<Value>(&body)
+                    .map_err(|err| format!("decode official Codex model response failed: {err}"))?;
+                official_model_catalog_from_value(&value)?;
+                Ok((value, response_etag))
+            })
+            .await
+        }
+        .await;
         match result {
             Ok(value) => return Ok(value),
             Err(err) => errors.push(format!("account {}: {err}", account.id)),

@@ -497,7 +497,11 @@ pub(super) fn current_author_content_value() -> Result<Value, String> {
 /// 返回函数执行结果
 fn load_free_account_max_model_options(current: &str) -> Vec<String> {
     let catalog = crate::storage_helpers::open_storage()
-        .and_then(|storage| storage.list_api_models_v2().ok())
+        .and_then(|storage| {
+            crate::account::remote_storage::AccountStorage::new(&storage)
+                .list_api_models_v2()
+                .ok()
+        })
         .unwrap_or_default();
     let known_current_is_non_text = catalog.iter().any(|model| {
         model.slug.eq_ignore_ascii_case(current.trim())

@@ -1,3 +1,18 @@
+mod auth_async;
+mod network_async;
+pub(crate) mod storage_async;
+#[cfg(test)]
+mod storage_mutation_tests;
+mod storage_reads;
+pub(crate) use network_async::{is_async_method, try_handle_network_request_async};
+mod account_async;
+mod account_auth_async;
+mod aggregate_async;
+mod codex_profile_async;
+mod codex_skills_async;
+mod plugin_async;
+mod reset_credits_async;
+mod usage_async;
 use codexmanager_core::rpc::types::{
     InitializeResult, JsonRpcError, JsonRpcErrorObject, JsonRpcMessage, JsonRpcRequest,
     JsonRpcResponse,
@@ -11,6 +26,7 @@ use crate::RpcActor;
 
 mod account;
 mod account_manager;
+mod account_manager_storage;
 mod aggregate_api;
 mod apikey;
 mod app_settings;
@@ -233,10 +249,9 @@ const MEMBER_METHOD_ALLOWLIST: &[&str] = &[
 ];
 
 fn member_method_allowed(method: &str) -> bool {
-    if crate::current_web_auth_mode() == "password" {
-        return true;
-    }
-    MEMBER_METHOD_ALLOWLIST.contains(&method)
+    // Native storage RPCs already in the allowlist need no synchronous settings
+    // lookup. Retain the password-mode compatibility policy for other methods.
+    MEMBER_METHOD_ALLOWLIST.contains(&method) || crate::current_web_auth_mode() == "password"
 }
 
 fn ensure_method_allowed(actor: &RpcActor, method: &str) -> Result<(), String> {
@@ -266,12 +281,14 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
     if req.method == "initialize" {
         let _ = storage_helpers::initialize_storage();
         if let Some(storage) = storage_helpers::open_storage() {
-            let _ = storage.insert_event(&Event {
-                account_id: None,
-                event_type: "initialize".to_string(),
-                message: "service initialized".to_string(),
-                created_at: now_ts(),
-            });
+            let _ = crate::account::remote_storage::AccountStorage::new(&storage).insert_event(
+                &Event {
+                    account_id: None,
+                    event_type: "initialize".to_string(),
+                    message: "service initialized".to_string(),
+                    created_at: now_ts(),
+                },
+            );
         }
         let result = InitializeResult {
             version: codexmanager_core::core_version().to_string(),

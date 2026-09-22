@@ -19,6 +19,7 @@ pub(crate) fn delete_account(account_id: &str) -> Result<(), String> {
         return Err("missing accountId".to_string());
     }
     let mut storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     storage
         .delete_account(account_id)
         .map_err(|e| e.to_string())?;

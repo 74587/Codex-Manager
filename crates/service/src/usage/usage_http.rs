@@ -10,13 +10,11 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
-use tokio::runtime::{Builder, Runtime};
 
 use crate::account_plan::normalize_account_plan_value;
 
 static USAGE_HTTP_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
 static SUBSCRIPTION_HTTP_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
-static USAGE_HTTP_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 const USAGE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const ENV_UPSTREAM_PROXY_URL: &str = "CODEXMANAGER_UPSTREAM_PROXY_URL";
 const USAGE_HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -48,6 +46,15 @@ const X_OPENAI_CODEX_LUNA_RESERVE_HEADER_NAME: &str = "x-openai-codex-luna-reser
 pub(crate) struct UsageActionHttpError {
     pub(crate) status: Option<u16>,
     pub(crate) message: String,
+}
+
+impl From<String> for UsageActionHttpError {
+    fn from(message: String) -> Self {
+        Self {
+            status: None,
+            message,
+        }
+    }
 }
 
 impl UsageActionHttpError {
@@ -183,28 +190,6 @@ struct AccountsCheckEntitlement {
     has_active_subscription: Option<bool>,
 }
 
-/// 函数 `usage_http_runtime`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// 无
-///
-/// # 返回
-/// 返回函数执行结果
-fn usage_http_runtime() -> &'static Runtime {
-    USAGE_HTTP_RUNTIME.get_or_init(|| {
-        Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .thread_name("usage-http")
-            .build()
-            .unwrap_or_else(|err| panic!("build usage http runtime failed: {err}"))
-    })
-}
-
 /// 函数 `run_usage_future`
 ///
 /// 作者: gaohongshun
@@ -216,11 +201,13 @@ fn usage_http_runtime() -> &'static Runtime {
 ///
 /// # 返回
 /// 返回函数执行结果
-fn run_usage_future<F>(future: F) -> F::Output
+fn run_usage_future<F, T, E>(future: F) -> Result<T, E>
 where
-    F: Future,
+    F: Future<Output = Result<T, E>> + Send,
+    T: Send,
+    E: From<String> + Send,
 {
-    usage_http_runtime().block_on(future)
+    crate::runtime::service_runtime::run_sync(future).map_err(E::from)?
 }
 
 /// 函数 `extract_refresh_token_error_code`
@@ -1229,7 +1216,7 @@ fn reset_credit_request_headers(
     Ok(headers)
 }
 
-async fn fetch_reset_credits_snapshot_async(
+pub(crate) async fn fetch_reset_credits_snapshot_async(
     base_url: &str,
     bearer: &str,
     chatgpt_account_id: Option<&str>,
@@ -1291,7 +1278,7 @@ async fn fetch_reset_credits_snapshot_async(
     Ok(parse_reset_credits_snapshot(&value))
 }
 
-async fn consume_reset_credit_request_async(
+pub(crate) async fn consume_reset_credit_request_async(
     base_url: &str,
     bearer: &str,
     chatgpt_account_id: Option<&str>,
@@ -1415,7 +1402,7 @@ pub(crate) fn fetch_account_subscription_with_explicit_proxy(
 ///
 /// # 返回
 /// 返回函数执行结果
-async fn fetch_usage_snapshot_async(
+pub(crate) async fn fetch_usage_snapshot_async(
     base_url: &str,
     auth_token: &str,
     chatgpt_account_id: Option<&str>,
@@ -1558,7 +1545,7 @@ async fn fetch_accounts_check_response_async(
 ///
 /// # 返回
 /// 返回函数执行结果
-async fn fetch_account_subscription_async(
+pub(crate) async fn fetch_account_subscription_async(
     base_url: &str,
     bearer: &str,
     account_id: &str,
@@ -1661,7 +1648,7 @@ pub(crate) fn refresh_access_token_with_explicit_proxy(
 ///
 /// # 返回
 /// 返回函数执行结果
-async fn refresh_access_token_async(
+pub(crate) async fn refresh_access_token_async(
     issuer: &str,
     client_id: &str,
     refresh_token: &str,
@@ -1711,21 +1698,19 @@ async fn refresh_access_token_async(
 }
 
 fn usage_http_client_for_proxy(explicit_proxy_url: Option<&str>) -> Result<Client, String> {
-    match explicit_proxy_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(proxy_url) => build_usage_http_client_with_explicit_proxy(proxy_url),
+    match explicit_proxy_url {
+        Some(proxy_url) => {
+            build_usage_http_client_with_explicit_proxy(&normalize_explicit_proxy_url(proxy_url)?)
+        }
         None => Ok(usage_http_client()),
     }
 }
 
 fn refresh_usage_http_client_for_proxy(explicit_proxy_url: Option<&str>) -> Result<Client, String> {
-    match explicit_proxy_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(proxy_url) => build_usage_http_client_with_explicit_proxy(proxy_url),
+    match explicit_proxy_url {
+        Some(proxy_url) => {
+            build_usage_http_client_with_explicit_proxy(&normalize_explicit_proxy_url(proxy_url)?)
+        }
         None => {
             rebuild_usage_http_client();
             Ok(usage_http_client())
@@ -1734,11 +1719,10 @@ fn refresh_usage_http_client_for_proxy(explicit_proxy_url: Option<&str>) -> Resu
 }
 
 fn subscription_http_client_for_proxy(explicit_proxy_url: Option<&str>) -> Result<Client, String> {
-    match explicit_proxy_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(proxy_url) => build_subscription_http_client_with_explicit_proxy(proxy_url),
+    match explicit_proxy_url {
+        Some(proxy_url) => build_subscription_http_client_with_explicit_proxy(
+            &normalize_explicit_proxy_url(proxy_url)?,
+        ),
         None => Ok(subscription_http_client()),
     }
 }
@@ -1746,11 +1730,10 @@ fn subscription_http_client_for_proxy(explicit_proxy_url: Option<&str>) -> Resul
 fn refresh_subscription_http_client_for_proxy(
     explicit_proxy_url: Option<&str>,
 ) -> Result<Client, String> {
-    match explicit_proxy_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(proxy_url) => build_subscription_http_client_with_explicit_proxy(proxy_url),
+    match explicit_proxy_url {
+        Some(proxy_url) => build_subscription_http_client_with_explicit_proxy(
+            &normalize_explicit_proxy_url(proxy_url)?,
+        ),
         None => {
             rebuild_subscription_http_client();
             Ok(subscription_http_client())

@@ -33,6 +33,7 @@ pub(crate) fn update(params: ResetWarmupUpdate) -> Result<ResetWarmupUpdateResul
         return Err("missing accountIds".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     let updated = storage
         .set_account_reset_warmup_enabled(&account_ids, params.enabled)
         .map_err(|err| err.to_string())?;

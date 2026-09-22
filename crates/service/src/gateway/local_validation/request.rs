@@ -3,12 +3,12 @@ use crate::apikey_profile::{
     PROTOCOL_ANTHROPIC_NATIVE, PROTOCOL_GEMINI_NATIVE, ROTATION_AGGREGATE_API,
 };
 use crate::gateway::request_helpers::ParsedRequestMetadata;
+use crate::http::gateway_request::GatewayRequest as Request;
 use base64::Engine;
 use bytes::Bytes;
 use codexmanager_core::storage::{ApiKey, ConversationBinding};
 use reqwest::Method;
 use serde_json::Value;
-use tiny_http::Request;
 
 use super::super::conversation_binding::RouteConversationSource;
 use super::{LocalValidationError, LocalValidationResult};
@@ -99,12 +99,14 @@ fn apply_model_instructions_policy(
     let Some(model_slug) = model_slug.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(body);
     };
-    let model = storage
-        .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
-        .map_err(|err| {
-            LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
-        })?
-        .ok_or_else(|| LocalValidationError::new(404, format!("model_not_found: {model_slug}")))?;
+    let model =
+        crate::models_v2::enabled_model(storage, crate::models_v2::policy_catalog_slug(model_slug))
+            .map_err(|err| {
+                LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
+            })?
+            .ok_or_else(|| {
+                LocalValidationError::new(404, format!("model_not_found: {model_slug}"))
+            })?;
     let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
         return Ok(body);
     };
@@ -127,12 +129,14 @@ fn apply_model_fast_policy(
     let Some(model_slug) = model_slug.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok((body, false));
     };
-    let model = storage
-        .get_enabled_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
-        .map_err(|err| {
-            LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
-        })?
-        .ok_or_else(|| LocalValidationError::new(404, format!("model_not_found: {model_slug}")))?;
+    let model =
+        crate::models_v2::enabled_model(storage, crate::models_v2::policy_catalog_slug(model_slug))
+            .map_err(|err| {
+                LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
+            })?
+            .ok_or_else(|| {
+                LocalValidationError::new(404, format!("model_not_found: {model_slug}"))
+            })?;
     crate::models_v2::fast_policy::apply(body, &model, client_service_tier).map_err(|_| {
         LocalValidationError::new(
             400,
@@ -448,11 +452,11 @@ fn ensure_non_text_model_not_used_for_text_request(
         ));
     }
 
-    let catalog_model = storage
-        .get_managed_model_v2(crate::models_v2::policy_catalog_slug(model_slug))
-        .map_err(|err| {
-            LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
-        })?;
+    let catalog_model =
+        crate::models_v2::managed_model(storage, crate::models_v2::policy_catalog_slug(model_slug))
+            .map_err(|err| {
+                LocalValidationError::new(500, format!("model_catalog_v2_read_failed: {err}"))
+            })?;
     if catalog_model
         .as_ref()
         .is_none_or(crate::models_v2::supports_text_generation)
@@ -1865,9 +1869,8 @@ pub(super) fn build_local_validation_result(
     api_key: ApiKey,
 ) -> Result<LocalValidationResult, LocalValidationError> {
     // 按当前策略取消每次请求都更新 api_keys.last_used_at，减少并发写入冲突。
-    let account_group_filter = storage
-        .find_api_key_account_group_filter(&api_key.id)
-        .map_err(|err| {
+    let account_group_filter =
+        crate::apikey::remote::group_filter(&storage, &api_key.id).map_err(|err| {
             LocalValidationError::new(
                 500,
                 crate::gateway::bilingual_error(

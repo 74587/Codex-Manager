@@ -34,7 +34,17 @@ $appsRoot = Join-Path $root "apps"
 $frontendRoot = $appsRoot
 $tauriDir = Join-Path $appsRoot "src-tauri"
 $rootTarget = Join-Path $root "target"
-$tauriTarget = Join-Path $tauriDir "target"
+$targetDir = if ($env:CARGO_TARGET_DIR) {
+  if ([IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+    $env:CARGO_TARGET_DIR
+  } else {
+    Join-Path $root $env:CARGO_TARGET_DIR
+  }
+} else {
+  # Cargo inherits the repository .cargo/config.toml even when invoked from
+  # apps/src-tauri, so the local target is rooted at the repository by default.
+  $rootTarget
+}
 $distDir = Join-Path $frontendRoot "out"
 $tauriConfig = Join-Path $tauriDir "tauri.conf.json"
 
@@ -47,7 +57,7 @@ $portableRoot = if ($PortableDir) { $PortableDir } else { Join-Path $root "porta
 $portableExe = Join-Path $portableRoot "$appName-portable.exe"
 $legacyPortableExe = Join-Path $portableRoot "$appName.exe"
 $legacyPortableMarker = Join-Path $portableRoot ".codexmanager-portable"
-$appExe = Join-Path $tauriDir "target\\release\\$appName.exe"
+$appExe = Join-Path $targetDir "release\\$appName.exe"
 $artifactsRoot = if ($ArtifactsDir) { $ArtifactsDir } else { Join-Path $root "artifacts" }
 
 <#
@@ -277,8 +287,7 @@ function Invoke-LocalWindowsBuild {
 
   Push-Location $root
   try {
-    Remove-Dir $rootTarget
-    Remove-Dir $tauriTarget
+    Remove-Dir $targetDir
     if ($CleanDist) {
       Remove-Dir $distDir
     }

@@ -153,10 +153,10 @@ fn anthropic_bridge_request_adds_required_messages_headers_with_default_auth() {
                 .expect("user agent header"),
         )
         .into();
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
     let built = build_anthropic_bridge_aggregate_api_request(
         &client,
-        &request,
+        &request.into(),
         &reqwest::Method::POST,
         reqwest::Url::parse("https://api.anthropic.com/v1/messages").expect("url"),
         &Bytes::from_static(br#"{"model":"claude-sonnet","messages":[]}"#),
@@ -214,10 +214,10 @@ fn aggregate_request_user_agent_override_replaces_conflicting_auth_header() {
                 .expect("incoming user agent"),
         )
         .into();
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
     let built = build_aggregate_api_request(
         &client,
-        &request,
+        &request.into(),
         &reqwest::Method::POST,
         reqwest::Url::parse("https://example.com/v1/responses").expect("url"),
         &Bytes::from_static(br#"{"model":"gpt-test"}"#),

@@ -91,6 +91,7 @@ impl From<&Account> for AccountSummaryParts {
 /// 返回函数执行结果
 pub(crate) fn read_accounts() -> Result<AccountListResult, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     let db_path = std::env::var("CODEXMANAGER_DB_PATH").unwrap_or_else(|_| "<unset>".to_string());
     let mut accounts = storage
         .list_account_summary_rows()
@@ -124,6 +125,7 @@ fn resolve_generated_import_labels(
     storage: &codexmanager_core::storage::Storage,
     accounts: &mut [AccountListSummaryRow],
 ) {
+    let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     for account in accounts {
         if !super::import::is_generated_import_label(&account.label) {
             continue;
@@ -241,6 +243,7 @@ pub(crate) fn build_account_summary_context_from_rows(
     storage: &codexmanager_core::storage::Storage,
     accounts: Vec<AccountListSummaryRow>,
 ) -> Result<AccountSummaryContext, String> {
+    let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     build_account_summary_context_from_rows_with_options(
         storage,
         accounts,
@@ -253,6 +256,7 @@ pub(crate) fn build_account_summary_context_from_rows_with_options(
     accounts: Vec<AccountListSummaryRow>,
     options: AccountSummaryStorageSnapshotOptions,
 ) -> Result<AccountSummaryContext, String> {
+    let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     build_account_summary_context_for_items(storage, accounts, options)
 }
 
@@ -264,6 +268,7 @@ fn build_account_summary_context_for_items<A>(
 where
     A: Into<AccountSummaryParts> + AsAccountId,
 {
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     if accounts.is_empty() {
         return Ok(AccountSummaryContext {
             items: Vec::new(),
@@ -311,6 +316,7 @@ fn load_account_summary_setup(
     account_ids: &[String],
     options: AccountSummaryStorageSnapshotOptions,
 ) -> Result<AccountSummarySetup, String> {
+    let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     let snapshot = storage
         .load_account_summary_storage_snapshot_with_options(account_ids, options)
         .map_err(|err| format!("load account summary snapshot failed: {err}"))?;

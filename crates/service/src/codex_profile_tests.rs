@@ -2,6 +2,44 @@ use super::*;
 use codexmanager_core::storage::{Account, Storage};
 use rusqlite::Connection;
 
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_profile_apply_preserves_in_progress_commit_and_mutation_lease() {
+    let profile_dir = temp_profile("cancelled-profile-commit");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let commit_path = profile_dir.join(CONFIG_FILE);
+    let written_path = commit_path.clone();
+    let (started, entered) = tokio::sync::oneshot::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let task = tokio::spawn(async move {
+        let lease = profile_mutation_lease().await;
+        profile_commit(&lease, move || {
+            started.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            write_atomic(&written_path, "model_provider = \"cm\"\n")
+        })
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(PROFILE_MUTATION_LOCK.get().unwrap().try_lock().is_err());
+    // The independent runtime task remains schedulable while the file worker
+    // is blocked, and cancellation cannot let a second profile writer race it.
+    tokio::task::yield_now().await;
+    release.send(()).unwrap();
+    let _next = tokio::time::timeout(Duration::from_secs(2), profile_mutation_lease())
+        .await
+        .expect("commit releases its lease after the file is complete");
+    assert_eq!(
+        fs::read_to_string(commit_path).unwrap(),
+        "model_provider = \"cm\"\n"
+    );
+    fs::remove_dir_all(profile_dir).unwrap();
+}
+
 fn temp_profile(name: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

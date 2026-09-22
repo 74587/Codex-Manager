@@ -1027,7 +1027,6 @@ pub struct AggregateApiBalanceRefreshResult {
     pub latency_ms: i64,
 }
 
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AggregateApiFetchModelsParams {

@@ -254,6 +254,7 @@ PatewayAI 专注于官方高质量模型 API 中继，完整支持 Claude、Code
 - 设置页“桌面诊断”可启用 Debug 模式、关闭普通桌面文件日志并打开日志目录。普通运行日志限制为 512 KB 并自动覆盖；请求日志与 Token / 费用统计不受这个开关影响。
 - 如果界面无法启动，可使用 `CodexManager.exe --debug`（macOS / Linux 为 `CodexManager --debug`）临时启用详细日志。启动失败会弹出具体原因，并将 `startup-error.log` 写入弹窗所示的日志目录。
 - 如需调整数据库、代理、监听地址等运行配置，可继续查看 [环境变量与运行配置](docs/zh-CN/report/环境变量与运行配置说明.md)。
+- Service 可选 SeaORM MySQL/PostgreSQL 后端，需编译对应驱动；旧 SQLite 可只读导出并事务导入空目标库，详见 [数据库切换与离线导入](docs/zh-CN/report/环境变量与运行配置说明.md#service-数据库切换与离线导入)。本地隔离数据库验收不代表生产验收，当前范围见 [迁移实证记录](docs/zh-CN/report/Axum-Tokio-Tower-SeaORM迁移进度与会话交接.md)。
 - Docker 镜像默认使用 `TZ=Asia/Shanghai`；compose 示例会优先沿用部署环境里的 `TZ`，没有设置时回退到 `Asia/Shanghai`，其他地区部署时请改成对应 IANA 时区。
 
 ## 页面展示

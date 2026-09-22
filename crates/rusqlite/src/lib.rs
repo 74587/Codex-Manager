@@ -190,7 +190,13 @@ where
     F: Future + Send,
     F::Output: Send,
 {
-    if tokio::runtime::Handle::try_current().is_ok() {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        // Release the async executor while the legacy synchronous database
+        // facade waits on its shared SQLx runtime. No per-query thread.
+        tokio::task::block_in_place(|| rt.block_on(future))
+    } else if tokio::runtime::Handle::try_current().is_ok() {
         std::thread::scope(|scope| {
             scope
                 .spawn(|| rt.block_on(future))

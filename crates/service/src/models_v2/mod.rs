@@ -1,6 +1,7 @@
 pub(crate) mod fast_policy;
 mod import;
 pub(crate) mod instructions;
+mod seaorm;
 
 use codexmanager_core::rpc::types::{
     ModelInfo, ModelReasoningLevel, ModelServiceTier, ModelTruncationPolicy, ModelsResponse,
@@ -25,6 +26,9 @@ pub(crate) struct ManagedModelListV2Result {
 }
 
 pub(crate) fn list(include_hidden: bool) -> Result<ManagedModelListV2Result, String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::list(include_hidden);
+    }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     list_with_storage(&storage, include_hidden)
@@ -34,6 +38,9 @@ pub(crate) fn list_with_storage(
     storage: &codexmanager_core::storage::Storage,
     include_hidden: bool,
 ) -> Result<ManagedModelListV2Result, String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::list(include_hidden);
+    }
     Ok(ManagedModelListV2Result {
         items: storage
             .list_managed_models_v2(include_hidden)
@@ -45,6 +52,9 @@ pub(crate) fn list_with_storage(
 }
 
 pub(crate) fn get(slug: &str) -> Result<ManagedModelV2, String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::get(slug)?.ok_or_else(|| "model_not_found".into());
+    }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     storage
@@ -54,6 +64,11 @@ pub(crate) fn get(slug: &str) -> Result<ManagedModelV2, String> {
 }
 
 pub(crate) fn upsert(input: ManagedModelV2Upsert) -> Result<ManagedModelV2, String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::upsert_many(vec![input])?
+            .pop()
+            .ok_or_else(|| "model_not_found".into());
+    }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let model = storage
@@ -64,6 +79,15 @@ pub(crate) fn upsert(input: ManagedModelV2Upsert) -> Result<ManagedModelV2, Stri
 }
 
 pub(crate) fn update_state(input: ManagedModelStateV2Update) -> Result<ManagedModelV2, String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::update_states(ManagedModelBatchStateV2Update {
+            slugs: vec![input.slug],
+            enabled: input.enabled,
+            visibility: input.visibility,
+        })?
+        .pop()
+        .ok_or_else(|| "model_not_found".into());
+    }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let model = storage
@@ -76,6 +100,9 @@ pub(crate) fn update_state(input: ManagedModelStateV2Update) -> Result<ManagedMo
 pub(crate) fn batch_update_state(
     input: ManagedModelBatchStateV2Update,
 ) -> Result<Vec<ManagedModelV2>, String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::update_states(input);
+    }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let models = storage
@@ -86,6 +113,9 @@ pub(crate) fn batch_update_state(
 }
 
 pub(crate) fn delete(slug: &str) -> Result<(), String> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::delete(slug);
+    }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     storage
@@ -105,6 +135,39 @@ pub(super) fn sync_active_gateway_catalog_best_effort(
 
 fn capability<'a>(model: &'a ManagedModelV2, keys: &[&str]) -> Option<&'a Value> {
     keys.iter().find_map(|key| model.capabilities.get(*key))
+}
+
+pub(crate) fn managed_model(
+    storage: &codexmanager_core::storage::Storage,
+    slug: &str,
+) -> rusqlite::Result<Option<ManagedModelV2>> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::get(slug).map_err(|e| rusqlite::Error::SqliteFailure((), Some(e)));
+    }
+    storage.get_managed_model_v2(slug)
+}
+
+pub(crate) fn enabled_model(
+    storage: &codexmanager_core::storage::Storage,
+    slug: &str,
+) -> rusqlite::Result<Option<ManagedModelV2>> {
+    managed_model(storage, slug).map(|model| model.filter(|m| m.enabled && m.supported_in_api))
+}
+
+pub(crate) fn api_models(
+    storage: &codexmanager_core::storage::Storage,
+) -> rusqlite::Result<Vec<ManagedModelV2>> {
+    if crate::storage_helpers::seaorm_enabled() {
+        return seaorm::list(false)
+            .map(|r| {
+                r.items
+                    .into_iter()
+                    .filter(|m| m.enabled && m.supported_in_api)
+                    .collect()
+            })
+            .map_err(|e| rusqlite::Error::SqliteFailure((), Some(e)));
+    }
+    storage.list_api_models_v2()
 }
 
 pub(crate) fn policy_catalog_slug(model_slug: &str) -> &str {
@@ -157,8 +220,7 @@ pub(crate) fn ensure_text_generation_model(
     let Some(slug) = slug.map(str::trim).filter(|slug| !slug.is_empty()) else {
         return Ok(());
     };
-    let Some(model) = storage
-        .get_managed_model_v2(policy_catalog_slug(slug))
+    let Some(model) = managed_model(storage, policy_catalog_slug(slug))
         .map_err(|err| format!("read managed model V2 failed: {err}"))?
     else {
         // Preserve existing behavior for external or not-yet-cataloged model slugs.
@@ -409,8 +471,7 @@ pub(crate) fn models_response_with_storage(
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<ModelsResponse, String> {
     Ok(ModelsResponse {
-        models: storage
-            .list_api_models_v2()
+        models: api_models(storage)
             .map_err(|err| format!("list API models V2 failed: {err}"))?
             .iter()
             .map(model_info)
@@ -423,8 +484,7 @@ pub(crate) fn text_generation_models_response_with_storage(
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<ModelsResponse, String> {
     Ok(ModelsResponse {
-        models: storage
-            .list_api_models_v2()
+        models: api_models(storage)
             .map_err(|err| format!("list API models V2 failed: {err}"))?
             .iter()
             .filter(|model| supports_text_generation(model))

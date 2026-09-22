@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{value as toml_value, DocumentMut, Item, Table, Value};
@@ -42,6 +43,46 @@ const ENV_HOME: &str = "HOME";
 const ENV_USERPROFILE: &str = "USERPROFILE";
 const ENV_HOMEDRIVE: &str = "HOMEDRIVE";
 const ENV_HOMEPATH: &str = "HOMEPATH";
+
+static PROFILE_PHASE_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+static PROFILE_MUTATION_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+type ProfileMutationLease = Arc<tokio::sync::MutexGuard<'static, ()>>;
+
+async fn profile_phase<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let permit = PROFILE_PHASE_WORKERS
+        .acquire()
+        .await
+        .map_err(|_| "Codex profile workers unavailable".to_owned())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|error| format!("Codex profile worker failed: {error}"))?
+}
+
+async fn profile_commit<T: Send + 'static>(
+    lease: &ProfileMutationLease,
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let lease = lease.clone();
+    profile_phase(move || {
+        let _lease = lease;
+        work()
+    })
+    .await
+}
+
+async fn profile_mutation_lease() -> ProfileMutationLease {
+    Arc::new(
+        PROFILE_MUTATION_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await,
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -255,6 +296,7 @@ pub(crate) fn set_config(codex_home: Option<&str>) -> Result<CodexProfileStatus,
 
 pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
     let storage = open_storage()?;
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     let tokens = usable_account_token_candidates_by_account(
         storage
             .list_usable_account_token_candidates()
@@ -275,8 +317,7 @@ pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    let mut api_keys = storage
-        .list_api_key_codex_profile_candidates()
+    let mut api_keys = crate::apikey::remote::profile_candidates(&storage)
         .map_err(|err| format!("list api key profile candidates failed: {err}"))?
         .into_iter()
         .filter_map(api_key_candidate)
@@ -307,67 +348,91 @@ pub(crate) fn apply_direct_account(
     codex_home: Option<&str>,
     reload_after_switch: bool,
 ) -> Result<CodexProfileStatus, String> {
-    let account_id = normalize_required(account_id, "missing accountId")?;
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    let _ = ensure_managed_profile_migrated(&profile_dir);
+    crate::gateway::run_upstream_io(apply_direct_account_async(
+        account_id,
+        codex_home,
+        reload_after_switch,
+    ))?
+}
 
-    let storage = open_storage()?;
-    let account = storage
-        .find_account_direct_auth_profile_by_id(account_id)
-        .map_err(|err| format!("read account failed: {err}"))?
-        .ok_or_else(|| "account not found".to_string())?;
-    let normalized_status = account.status.trim().to_ascii_lowercase();
-    if !matches!(normalized_status.as_str(), "active" | "force_enabled") {
-        return Err("account is not active".to_string());
-    }
-    let mut token = storage
-        .find_token_by_account_id(account_id)
-        .map_err(|err| format!("read token failed: {err}"))?
-        .ok_or_else(|| "account token not found".to_string())?;
-    ensure_usable_token(&token)?;
+pub(crate) async fn apply_direct_account_async(
+    account_id: Option<&str>,
+    codex_home: Option<&str>,
+    reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    let account_id = normalize_required(account_id, "missing accountId")?.to_owned();
+    let codex_home = codex_home.map(str::to_owned);
+    let lease = profile_mutation_lease().await;
+    let (profile_dir, account, mut token) = profile_commit(&lease, move || {
+        let profile_dir = resolve_profile_dir(codex_home.as_deref())?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let _ = ensure_managed_profile_migrated(&profile_dir);
+        let storage = open_storage()?;
+        let storage = crate::account::remote_storage::AccountStorage::new(&storage);
+        let account = storage
+            .find_account_direct_auth_profile_by_id(&account_id)
+            .map_err(|err| format!("read account failed: {err}"))?
+            .ok_or_else(|| "account not found".to_string())?;
+        let normalized_status = account.status.trim().to_ascii_lowercase();
+        if !matches!(normalized_status.as_str(), "active" | "force_enabled") {
+            return Err("account is not active".to_string());
+        }
+        let token = storage
+            .find_token_by_account_id(&account_id)
+            .map_err(|err| format!("read token failed: {err}"))?
+            .ok_or_else(|| "account token not found".to_string())?;
+        ensure_usable_token(&token)?;
+        Ok((profile_dir, account, token))
+    })
+    .await?;
 
     let issuer = account.issuer.trim();
     if issuer.is_empty() {
         return Err("account issuer is empty".to_string());
     }
-    crate::usage_token_refresh::refresh_and_persist_access_token(
+    let storage = profile_phase(|| Ok(open_storage()?.shared_handle())).await?;
+    crate::usage_token_refresh::refresh_and_persist_access_token_async(
         &storage,
         &mut token,
         issuer,
         DEFAULT_CLIENT_ID,
         crate::usage_token_refresh::token_refresh_ahead_secs(),
-    )?;
+    )
+    .await?;
+    drop(storage);
     ensure_usable_token(&token)?;
 
-    ensure_backup(&profile_dir)?;
-    let auth_json = build_direct_auth_json(&account, &token)?;
-    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
-    let paths = managed_profile_paths(&profile_dir)?;
-    let previous_model_catalog_json = previous_model_catalog_for_direct(&profile_dir);
-    let config_toml = patch_config_for_direct(
-        current_config,
-        &paths.gateway_model_catalog_path,
-        previous_model_catalog_json.as_deref(),
-    )?;
-    write_profile_files(
-        &profile_dir,
-        &auth_json,
-        &config_toml,
-        ManagedState {
-            profile_dir: profile_key(&profile_dir),
-            mode: CodexProfileMode::DirectAccount,
-            account_id: Some(account.id.clone()),
-            api_key_id: None,
-            gateway_base_url: None,
-            supports_websockets: None,
-            provider_id: DEFAULT_HISTORY_PROVIDER_ID.to_string(),
-            previous_model_catalog_json: None,
-            updated_at: now_ts(),
-        },
-    )?;
-    persist_codex_home(&profile_dir)?;
-    status_for_profile_after_apply(&profile_dir, None, reload_after_switch)
+    profile_commit(&lease, move || {
+        ensure_backup(&profile_dir)?;
+        let auth_json = build_direct_auth_json(&account, &token)?;
+        let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+        let paths = managed_profile_paths(&profile_dir)?;
+        let previous_model_catalog_json = previous_model_catalog_for_direct(&profile_dir);
+        let config_toml = patch_config_for_direct(
+            current_config,
+            &paths.gateway_model_catalog_path,
+            previous_model_catalog_json.as_deref(),
+        )?;
+        write_profile_files(
+            &profile_dir,
+            &auth_json,
+            &config_toml,
+            ManagedState {
+                profile_dir: profile_key(&profile_dir),
+                mode: CodexProfileMode::DirectAccount,
+                account_id: Some(account.id.clone()),
+                api_key_id: None,
+                gateway_base_url: None,
+                supports_websockets: None,
+                provider_id: DEFAULT_HISTORY_PROVIDER_ID.to_string(),
+                previous_model_catalog_json: None,
+                updated_at: now_ts(),
+            },
+        )?;
+        persist_codex_home(&profile_dir)?;
+        status_for_profile_after_apply(&profile_dir, None, reload_after_switch)
+    })
+    .await
 }
 
 pub(crate) fn apply_gateway(
@@ -377,73 +442,119 @@ pub(crate) fn apply_gateway(
     supports_websockets: Option<bool>,
     reload_after_switch: bool,
 ) -> Result<CodexProfileStatus, String> {
-    let api_key_id = normalize_required(api_key_id, "missing apiKeyId")?;
-    let profile_dir = resolve_profile_dir(codex_home)?;
-    ensure_profile_dir_valid(&profile_dir)?;
-    let _ = ensure_managed_profile_migrated(&profile_dir);
-    let gateway_base_url = normalize_gateway_base_url(base_url);
-
-    let storage = open_storage()?;
-    let gateway_auth = storage
-        .find_api_key_gateway_auth_by_id(api_key_id)
-        .map_err(|err| format!("read api key failed: {err}"))?
-        .ok_or_else(|| "api key not found".to_string())?;
-    if !api_key_status_is_active(&gateway_auth.status) {
-        return Err("api key is disabled".to_string());
-    }
-    let secret = gateway_auth
-        .secret
-        .ok_or_else(|| "api key secret not found".to_string())?;
-    if secret.trim().is_empty() {
-        return Err("api key secret is empty".to_string());
-    }
-
-    ensure_backup(&profile_dir)?;
-    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
-    let previous_model_catalog_json =
-        previous_model_catalog_for_gateway(&profile_dir, current_config.as_deref())?;
-    let paths = managed_profile_paths(&profile_dir)?;
-    let catalog_policy = crate::codex_model_catalog::gateway_catalog_policy_for_api_key(
-        &storage,
-        gateway_auth.id.as_str(),
-    )?;
-    let websocket_available = gateway_supports_websockets(&storage, gateway_auth.id.as_str())?;
-    let supports_websockets = supports_websockets.unwrap_or(websocket_available);
-    if supports_websockets && !websocket_available {
-        return Err("selected platform key does not support Responses WebSocket".to_string());
-    }
-    crate::codex_model_catalog::write_gateway_model_catalog(
-        &storage,
-        gateway_auth.id.as_str(),
-        &paths.gateway_model_catalog_path,
-        catalog_policy,
-    )?;
-    let auth_json = build_gateway_auth_json(&secret)?;
-    let config_toml = patch_config_for_gateway(
-        current_config,
-        &gateway_base_url,
-        &paths.gateway_model_catalog_path,
+    crate::gateway::run_upstream_io(apply_gateway_async(
+        api_key_id,
+        codex_home,
+        base_url,
         supports_websockets,
-        &secret,
-    )?;
-    write_profile_files(
-        &profile_dir,
-        &auth_json,
-        &config_toml,
-        ManagedState {
-            profile_dir: profile_key(&profile_dir),
-            mode: CodexProfileMode::Gateway,
-            account_id: None,
-            api_key_id: Some(gateway_auth.id),
-            gateway_base_url: Some(gateway_base_url),
-            supports_websockets: Some(supports_websockets),
-            provider_id: PROVIDER_ID.to_string(),
+        reload_after_switch,
+    ))?
+}
+
+pub(crate) async fn apply_gateway_async(
+    api_key_id: Option<&str>,
+    codex_home: Option<&str>,
+    base_url: Option<&str>,
+    supports_websockets: Option<bool>,
+    reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    let api_key_id = normalize_required(api_key_id, "missing apiKeyId")?.to_owned();
+    let codex_home = codex_home.map(str::to_owned);
+    let gateway_base_url = normalize_gateway_base_url(base_url);
+    let lease = profile_mutation_lease().await;
+    let (
+        profile_dir,
+        gateway_auth,
+        secret,
+        current_config,
+        previous_model_catalog_json,
+        paths,
+        catalog_policy,
+        supports_websockets,
+        storage,
+    ) = profile_commit(&lease, move || {
+        let profile_dir = resolve_profile_dir(codex_home.as_deref())?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let _ = ensure_managed_profile_migrated(&profile_dir);
+        let storage = open_storage()?;
+        let gateway_auth = crate::apikey::remote::gateway_auth(&storage, &api_key_id)
+            .map_err(|err| format!("read api key failed: {err}"))?
+            .ok_or_else(|| "api key not found".to_string())?;
+        if !api_key_status_is_active(&gateway_auth.status) {
+            return Err("api key is disabled".to_string());
+        }
+        let secret = gateway_auth
+            .secret
+            .clone()
+            .ok_or_else(|| "api key secret not found".to_string())?;
+        if secret.trim().is_empty() {
+            return Err("api key secret is empty".to_string());
+        }
+
+        ensure_backup(&profile_dir)?;
+        let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+        let previous_model_catalog_json =
+            previous_model_catalog_for_gateway(&profile_dir, current_config.as_deref())?;
+        let paths = managed_profile_paths(&profile_dir)?;
+        let catalog_policy = crate::codex_model_catalog::gateway_catalog_policy_for_api_key(
+            &storage,
+            gateway_auth.id.as_str(),
+        )?;
+        let websocket_available = gateway_supports_websockets(&storage, gateway_auth.id.as_str())?;
+        let supports_websockets = supports_websockets.unwrap_or(websocket_available);
+        if supports_websockets && !websocket_available {
+            return Err("selected platform key does not support Responses WebSocket".to_string());
+        }
+        Ok((
+            profile_dir,
+            gateway_auth,
+            secret,
+            current_config,
             previous_model_catalog_json,
-            updated_at: now_ts(),
-        },
-    )?;
-    persist_codex_home(&profile_dir)?;
-    status_for_profile_after_apply(&profile_dir, Some(PROVIDER_ID), reload_after_switch)
+            paths,
+            catalog_policy,
+            supports_websockets,
+            storage.shared_handle(),
+        ))
+    })
+    .await?;
+    let (catalog_content, _) = crate::codex_model_catalog::gateway_model_catalog_content_async(
+        &storage,
+        gateway_auth.id.as_str(),
+        catalog_policy,
+    )
+    .await?;
+    drop(storage);
+    profile_commit(&lease, move || {
+        write_atomic(&paths.gateway_model_catalog_path, &catalog_content)?;
+        let auth_json = build_gateway_auth_json(&secret)?;
+        let config_toml = patch_config_for_gateway(
+            current_config,
+            &gateway_base_url,
+            &paths.gateway_model_catalog_path,
+            supports_websockets,
+            &secret,
+        )?;
+        write_profile_files(
+            &profile_dir,
+            &auth_json,
+            &config_toml,
+            ManagedState {
+                profile_dir: profile_key(&profile_dir),
+                mode: CodexProfileMode::Gateway,
+                account_id: None,
+                api_key_id: Some(gateway_auth.id),
+                gateway_base_url: Some(gateway_base_url),
+                supports_websockets: Some(supports_websockets),
+                provider_id: PROVIDER_ID.to_string(),
+                previous_model_catalog_json,
+                updated_at: now_ts(),
+            },
+        )?;
+        persist_codex_home(&profile_dir)?;
+        status_for_profile_after_apply(&profile_dir, Some(PROVIDER_ID), reload_after_switch)
+    })
+    .await
 }
 
 pub(crate) fn restore(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
@@ -2121,60 +2232,90 @@ fn set_provider_http_header(provider: &mut Table, name: &str, value: &str) -> Re
 }
 
 pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Result<bool, String> {
-    let Some(mut state) = load_state() else {
+    crate::gateway::run_upstream_io(sync_active_gateway_profile_from_storage_async(storage))?
+}
+
+pub(crate) async fn sync_active_gateway_profile_from_storage_async(
+    storage: &Storage,
+) -> Result<bool, String> {
+    let lease = profile_mutation_lease().await;
+    let storage = storage.shared_handle();
+    let phase_storage = storage.shared_handle();
+    let prepared = profile_commit(&lease, move || {
+        let Some(state) = load_state() else {
+            return Ok(None);
+        };
+        if !matches!(state.mode, CodexProfileMode::Gateway) {
+            return Ok(None);
+        }
+        let profile_dir = PathBuf::from(&state.profile_dir);
+        let paths = managed_profile_paths(&profile_dir)?;
+        let api_key_id = state
+            .api_key_id
+            .as_deref()
+            .ok_or_else(|| "active gateway profile is missing api key id".to_string())?;
+        let catalog_policy = crate::codex_model_catalog::gateway_catalog_policy_for_api_key(
+            &phase_storage,
+            api_key_id,
+        )?;
+        let websocket_available = gateway_supports_websockets(&phase_storage, api_key_id)?;
+        let supports_websockets =
+            state.supports_websockets.unwrap_or(websocket_available) && websocket_available;
+        Ok(Some((
+            state,
+            profile_dir,
+            paths,
+            catalog_policy,
+            supports_websockets,
+        )))
+    })
+    .await?;
+    let Some((mut state, profile_dir, paths, catalog_policy, supports_websockets)) = prepared
+    else {
         return Ok(false);
     };
-    if !matches!(state.mode, CodexProfileMode::Gateway) {
-        return Ok(false);
-    }
-    let profile_dir = PathBuf::from(&state.profile_dir);
-    let paths = managed_profile_paths(&profile_dir)?;
-    let api_key_id = state
-        .api_key_id
-        .as_deref()
-        .ok_or_else(|| "active gateway profile is missing api key id".to_string())?;
-    let catalog_policy =
-        crate::codex_model_catalog::gateway_catalog_policy_for_api_key(storage, api_key_id)?;
-    let websocket_available = gateway_supports_websockets(storage, api_key_id)?;
-    let supports_websockets =
-        state.supports_websockets.unwrap_or(websocket_available) && websocket_available;
-    crate::codex_model_catalog::write_gateway_model_catalog(
-        storage,
-        api_key_id,
-        &paths.gateway_model_catalog_path,
+    let (catalog_content, _) = crate::codex_model_catalog::gateway_model_catalog_content_async(
+        &storage,
+        state.api_key_id.as_deref().expect("validated gateway key"),
         catalog_policy,
-    )?;
-    let gateway_base_url = normalize_gateway_base_url(state.gateway_base_url.as_deref());
-    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
-    let gateway_auth = storage
-        .find_api_key_gateway_auth_by_id(api_key_id)
-        .map_err(|err| format!("read api key failed: {err}"))?
-        .ok_or_else(|| "api key not found".to_string())?;
-    let secret = gateway_auth
-        .secret
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "api key secret not found".to_string())?;
-    let config_toml = patch_config_for_gateway(
-        current_config,
-        &gateway_base_url,
-        &paths.gateway_model_catalog_path,
-        supports_websockets,
-        secret,
-    )?;
-    write_atomic(&profile_dir.join(CONFIG_FILE), &config_toml)?;
-    if state.supports_websockets != Some(supports_websockets) {
-        state.supports_websockets = Some(supports_websockets);
-        save_state(&state)?;
-    }
-    Ok(true)
+    )
+    .await?;
+    profile_commit(&lease, move || {
+        let api_key_id = state.api_key_id.as_deref().expect("validated gateway key");
+        write_atomic(&paths.gateway_model_catalog_path, &catalog_content)?;
+        let gateway_base_url = normalize_gateway_base_url(state.gateway_base_url.as_deref());
+        let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+        let gateway_auth = crate::apikey::remote::gateway_auth(&storage, api_key_id)
+            .map_err(|err| format!("read api key failed: {err}"))?
+            .ok_or_else(|| "api key not found".to_string())?;
+        let secret = gateway_auth
+            .secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "api key secret not found".to_string())?;
+        let config_toml = patch_config_for_gateway(
+            current_config,
+            &gateway_base_url,
+            &paths.gateway_model_catalog_path,
+            supports_websockets,
+            secret,
+        )?;
+        write_atomic(&profile_dir.join(CONFIG_FILE), &config_toml)?;
+        if state.supports_websockets != Some(supports_websockets) {
+            state.supports_websockets = Some(supports_websockets);
+            save_state(&state)?;
+        }
+        Ok(true)
+    })
+    .await
 }
 
 pub(crate) fn sync_active_gateway_profile_for_api_key(
     storage: &Storage,
     api_key_id: &str,
 ) -> Result<bool, String> {
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     let Some(state) = load_state() else {
         return Ok(false);
     };
@@ -2187,8 +2328,8 @@ pub(crate) fn sync_active_gateway_profile_for_api_key(
 }
 
 fn gateway_supports_websockets(storage: &Storage, api_key_id: &str) -> Result<bool, String> {
-    let api_key = storage
-        .find_api_key_by_id(api_key_id)
+    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
+    let api_key = crate::apikey::remote::find_by_id(storage, api_key_id)
         .map_err(|err| format!("read api key websocket config failed: {err}"))?
         .ok_or_else(|| "api key not found".to_string())?;
     Ok(crate::gateway::gateway_supports_official_responses_websocket(&api_key))

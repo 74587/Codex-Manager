@@ -28,6 +28,7 @@ pub(crate) fn prepare_gateway_candidates(
     account_plan_filter: Option<&str>,
     low_quota_mode: super::super::super::LowQuotaCandidateMode,
 ) -> Result<Vec<(Account, Token)>, String> {
+    let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     let normalized_group_filter = account_group_filter
         .map(str::trim)
         .filter(|value| !value.is_empty());
@@ -123,6 +124,7 @@ fn collect_luna_reserve_candidates(
     account_ids: &[String],
     snapshots: &HashMap<String, UsageSnapshotRecord>,
 ) -> Result<Vec<(Account, Token)>, String> {
+    let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     if account_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -180,11 +182,9 @@ fn request_exceeds_free_account_model_ceiling(
         return Ok(false);
     }
 
-    let ceiling_model = storage
-        .get_enabled_model_v2(ceiling_catalog_slug)
+    let ceiling_model = crate::models_v2::enabled_model(storage, ceiling_catalog_slug)
         .map_err(|err| format!("read free account model ceiling failed: {err}"))?;
-    let request_model = storage
-        .get_enabled_model_v2(request_catalog_slug)
+    let request_model = crate::models_v2::enabled_model(storage, request_catalog_slug)
         .map_err(|err| format!("read requested model rank failed: {err}"))?;
 
     // 中文注释：模型目录的 sort_order 越小优先级越高。未知模型无法证明未超过上限，

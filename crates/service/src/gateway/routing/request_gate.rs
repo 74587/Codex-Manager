@@ -33,6 +33,7 @@ struct RequestGateState {
 pub(crate) struct RequestGateLock {
     state: Mutex<RequestGateState>,
     available: Condvar,
+    async_available: tokio::sync::Notify,
 }
 
 impl RequestGateLock {
@@ -51,6 +52,7 @@ impl RequestGateLock {
         Self {
             state: Mutex::new(RequestGateState::default()),
             available: Condvar::new(),
+            async_available: tokio::sync::Notify::new(),
         }
     }
 
@@ -83,6 +85,22 @@ impl RequestGateLock {
         Ok(Some(RequestGateGuard {
             lock: Arc::clone(self),
         }))
+    }
+
+    pub(crate) async fn acquire_async(
+        self: &Arc<Self>,
+    ) -> Result<RequestGateGuard, RequestGateAcquireError> {
+        loop {
+            // Register before checking the state so release cannot be lost
+            // between the check and the first poll of the notification.
+            let notified = self.async_available.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(guard) = self.try_acquire()? {
+                return Ok(guard);
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn acquire(self: &Arc<Self>) -> Result<RequestGateGuard, RequestGateAcquireError> {
@@ -170,6 +188,7 @@ impl Drop for RequestGateGuard {
         };
         state.held = false;
         self.lock.available.notify_one();
+        self.lock.async_available.notify_one();
     }
 }
 

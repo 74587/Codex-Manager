@@ -3,6 +3,7 @@ members = [
   "crates/core",
   "crates/rusqlite",
   "crates/service",
+  "crates/storage-seaorm",
   "crates/start",
   "crates/web"
 ]

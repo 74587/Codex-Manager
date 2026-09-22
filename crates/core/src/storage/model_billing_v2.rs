@@ -231,7 +231,7 @@ impl Storage {
             params![HARDENING_MIGRATION_VERSION, now_ts()],
         )?;
         tx.commit()?;
-        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+        if let Some(migrations) = self.migration_cache().as_mut() {
             migrations.insert(HARDENING_MIGRATION_VERSION.to_string());
         }
         Ok(())

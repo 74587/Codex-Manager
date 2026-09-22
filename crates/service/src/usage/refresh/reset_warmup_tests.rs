@@ -174,7 +174,7 @@ fn reset_warmup_failed_send_is_not_repeated_for_same_cycle() {
 
 #[test]
 fn reset_warmup_queue_is_bounded_and_deduplicated_before_claiming() {
-    let (sender, receiver) = bounded(1);
+    let (sender, mut receiver) = bounded(1);
     let executor = ResetWarmupExecutor {
         sender,
         pending: Arc::new(Mutex::new(HashSet::new())),
@@ -192,6 +192,6 @@ fn reset_warmup_queue_is_bounded_and_deduplicated_before_claiming() {
         due_at: DUE_AT,
     };
     assert!(!executor.enqueue(second.clone()));
-    receiver.recv().unwrap();
+    receiver.try_recv().unwrap();
     assert!(executor.enqueue(second));
 }

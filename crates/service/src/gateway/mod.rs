@@ -109,9 +109,11 @@ pub(crate) fn prefers_raw_errors_for_http_headers(headers: &axum::http::HeaderMa
     })
 }
 
-pub(crate) fn prefers_raw_errors_for_tiny_http_request(request: &tiny_http::Request) -> bool {
+pub(crate) fn prefers_raw_errors_for_gateway_request(
+    request: &crate::http::gateway_request::GatewayRequest,
+) -> bool {
     request.headers().iter().any(|header| {
-        let name = header.field.as_str().as_str();
+        let name = header.field.as_str();
         is_codex_header_name(name)
             || (header.field.equiv("User-Agent") && is_codex_user_agent(header.value.as_str()))
     })
@@ -205,11 +207,11 @@ pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
-    record_gateway_request_outcome, AccountInFlightGuard,
+    AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus,
-    record_usage_refresh_outcome, GatewayCandidateSkipReason,
+    record_gateway_request_outcome, record_usage_refresh_outcome, GatewayCandidateSkipReason,
 };
 pub(super) use official_responses_http::normalize_official_responses_http_body_with_value;
 use protocol_adapter::build_gemini_error_body;
@@ -320,7 +322,17 @@ pub(super) use failover::should_failover_after_refresh;
 use failover::{
     should_failover_from_cached_snapshot_value, should_failover_from_low_quota_snapshot_value,
 };
+use http_bridge::defer_upstream_response;
+pub(crate) use http_bridge::drain_deferred_responses;
+pub(crate) use http_bridge::reserve_deferred_response;
+#[cfg(test)]
 use http_bridge::respond_with_upstream;
+#[cfg(test)]
+pub(crate) fn response_test_runtime() -> std::io::Result<&'static tokio::runtime::Runtime> {
+    // Historical fixtures use the same process executor as native listeners.
+    let _ = current_sse_keepalive_interval_ms();
+    upstream::attempt_flow::transport::runtime::upstream_runtime().map_err(std::io::Error::other)
+}
 pub(crate) use http_bridge::summarize_upstream_error_hint_from_body;
 pub(crate) use http_bridge::PassthroughSseProtocol;
 /// 函数 `extract_identity_error_code_from_headers`
@@ -473,13 +485,15 @@ pub(super) use incoming_headers::IncomingHeaderSnapshot;
 use local_count_tokens::maybe_respond_local_count_tokens;
 use local_models::maybe_respond_local_models;
 use openai_fallback::try_openai_fallback;
+#[cfg(test)]
 pub(crate) use request_entry::handle_gateway_request;
+pub(crate) use request_entry::handle_gateway_request_async;
 use request_gate::{request_gate_lock, RequestGateAcquireError};
 pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
+pub(crate) use runtime_config::async_upstream_client_for_aggregate_url;
 pub(crate) use runtime_config::invalidate_account_proxy_client_cache as invalidate_account_proxy_cache;
-pub(crate) use runtime_config::upstream_client;
 pub(crate) use runtime_config::{account_max_inflight_limit, set_account_max_inflight_limit};
 pub(crate) use runtime_config::{
     account_test_proxy_url_for_account, build_account_test_client_with_timeouts,
@@ -487,14 +501,13 @@ pub(crate) use runtime_config::{
 };
 pub(crate) use runtime_config::{
     async_upstream_client_for_account, fresh_async_upstream_client_for_account,
-    fresh_upstream_client_for_account, prepare_upstream_client_for_account,
-    upstream_client_for_account,
+    prepare_upstream_client_for_account,
 };
 pub(crate) use runtime_config::{front_proxy_max_body_bytes, front_proxy_zstd_max_body_bytes};
 use runtime_config::{
     prepare_upstream_client_for_aggregate_api_candidate, request_gate_wait_timeout,
-    trace_body_preview_max_bytes, upstream_client_for_aggregate_api_candidate,
-    upstream_stream_timeout, upstream_total_timeout, DEFAULT_GATEWAY_DEBUG,
+    trace_body_preview_max_bytes, upstream_stream_timeout, upstream_total_timeout,
+    DEFAULT_GATEWAY_DEBUG,
 };
 pub(crate) use runtime_config::{
     set_thread_aware_account_distribution_enabled, thread_aware_account_distribution_enabled,
@@ -927,10 +940,6 @@ pub(crate) fn current_upstream_proxy_bypass_hosts() -> String {
     runtime_config::upstream_proxy_bypass_hosts()
 }
 
-pub(crate) fn upstream_client_for_aggregate_url(url: &str) -> reqwest::blocking::Client {
-    runtime_config::upstream_client_for_aggregate_url(url)
-}
-
 pub(crate) fn apply_async_upstream_proxy(
     builder: reqwest::ClientBuilder,
     proxy_url: Option<&str>,
@@ -1088,6 +1097,7 @@ pub(crate) fn set_manual_preferred_account(account_id: &str) -> Result<(), Strin
         return Err("accountId is required".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage not initialized".to_string())?;
+    let storage = crate::account::remote_storage::AccountStorage::new(&storage);
     let found = storage.account_exists(id).map_err(|err| err.to_string())?;
     if !found {
         return Err("account not found".to_string());
@@ -1197,12 +1207,10 @@ pub(crate) fn gateway_collect_routed_candidates_with_log_source(
     key_id: &str,
     model: Option<&str>,
 ) -> Result<GatewayRoutedCandidates, String> {
-    let api_key = storage
-        .find_api_key_by_id(key_id)
+    let api_key = crate::apikey::remote::find_by_id(storage, key_id)
         .map_err(|err| format!("read api key routing config failed: {err}"))?
         .ok_or_else(|| "api key not found".to_string())?;
-    let account_group_filter = storage
-        .find_api_key_account_group_filter(key_id)
+    let account_group_filter = crate::apikey::remote::group_filter(storage, key_id)
         .map_err(|err| format!("read api key account group filter failed: {err}"))?;
     let mut candidates = upstream::support::candidates::prepare_gateway_candidates(
         storage,
@@ -1227,12 +1235,10 @@ pub(crate) fn gateway_collect_routed_candidates_for_ws(
     route_conversation_id: Option<&str>,
     route_conversation_source: Option<conversation_binding::RouteConversationSource>,
 ) -> Result<GatewayRoutedCandidates, String> {
-    let api_key = storage
-        .find_api_key_by_id(key_id)
+    let api_key = crate::apikey::remote::find_by_id(storage, key_id)
         .map_err(|err| format!("read api key routing config failed: {err}"))?
         .ok_or_else(|| "api key not found".to_string())?;
-    let account_group_filter = storage
-        .find_api_key_account_group_filter(key_id)
+    let account_group_filter = crate::apikey::remote::group_filter(storage, key_id)
         .map_err(|err| format!("read api key account group filter failed: {err}"))?;
     let mut candidates = upstream::support::candidates::prepare_gateway_candidates(
         storage,
@@ -1269,7 +1275,9 @@ pub(crate) fn gateway_collect_routed_candidates_for_ws(
         && conversation_routing.as_ref().is_some_and(|routing| {
             routing.existing_binding.is_none() && routing.source.allows_initial_binding_create()
         }) {
-        match storage.active_conversation_binding_account_counts(api_key.key_hash.as_str()) {
+        match crate::account::remote_storage::AccountStorage::new(storage)
+            .active_conversation_binding_account_counts(api_key.key_hash.as_str())
+        {
             Ok(counts) => Some(counts),
             Err(err) => {
                 log::warn!("load conversation binding account counts for websocket failed: {err}");
@@ -1401,7 +1409,15 @@ pub(crate) fn gateway_resolve_openai_bearer_token(
     account: &codexmanager_core::storage::Account,
     token: &mut codexmanager_core::storage::Token,
 ) -> Result<String, String> {
-    resolve_openai_bearer_token(storage, account, token)
+    run_upstream_io(resolve_openai_bearer_token(storage, account, token))?
+}
+
+pub(crate) async fn gateway_resolve_openai_bearer_token_async(
+    storage: &codexmanager_core::storage::Storage,
+    account: &codexmanager_core::storage::Account,
+    token: &mut codexmanager_core::storage::Token,
+) -> Result<String, String> {
+    resolve_openai_bearer_token(storage, account, token).await
 }
 
 pub(crate) fn gateway_is_openai_api_base(base: &str) -> bool {
@@ -1566,3 +1582,44 @@ pub(crate) fn gateway_compute_upstream_url(
 #[cfg(test)]
 #[path = "../../tests/gateway/availability/mod.rs"]
 mod availability_tests;
+
+/// Runs network I/O for the remaining synchronous domain adapter. The future
+/// is cancellable by the downstream request and all socket I/O is asynchronous.
+pub(crate) fn run_upstream_io<F>(future: F) -> Result<F::Output, String>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    // Preserve request cancellation when crossing a remaining synchronous ABI.
+    let future = crate::http::gateway_request::with_response_cancellation(future);
+    let result = crate::runtime::service_runtime::run_sync(future)?;
+    result.map_err(|()| "downstream request cancelled".to_owned())
+}
+
+#[cfg(test)]
+mod upstream_compatibility_tests {
+    async fn socket_wait() -> usize {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        7
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_thread_compatibility_does_not_nest_runtime() {
+        assert_eq!(super::run_upstream_io(socket_wait()).unwrap(), 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn multithread_compatibility_does_not_nest_runtime() {
+        assert_eq!(super::run_upstream_io(socket_wait()).unwrap(), 7);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn compatibility_preserves_callers_cancellation_scope() {
+        let (_sender, receiver) = tokio::sync::watch::channel(true);
+        let result = crate::http::gateway_request::scope_response_cancellation(receiver, async {
+            super::run_upstream_io(std::future::pending::<()>())
+        })
+        .await;
+        assert_eq!(result.unwrap_err(), "downstream request cancelled");
+    }
+}
