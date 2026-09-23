@@ -38,6 +38,7 @@ mod request_log_filters;
 pub mod request_log_query;
 mod request_logs;
 mod request_token_stats;
+mod reset_credit_operations;
 mod settings;
 mod tokens;
 mod usage;
@@ -53,6 +54,10 @@ pub use model_catalog_v2::{
     ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
+pub use reset_credit_operations::{
+    ResetCreditOperation, ResetCreditOperationClaim, ResetCreditOperationStatus,
+    ResetCreditOperationUpdate,
+};
 
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -2304,6 +2309,14 @@ impl Storage {
         self.apply_sql_migration(
             "134_account_reset_warmups",
             include_str!("../../migrations/134_account_reset_warmups.sql"),
+        )?;
+        self.apply_sql_migration(
+            "135_reset_credit_operations",
+            include_str!("../../migrations/135_reset_credit_operations.sql"),
+        )?;
+        self.apply_sql_migration(
+            "136_reset_credit_operation_accounts",
+            include_str!("../../migrations/136_reset_credit_operation_accounts.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

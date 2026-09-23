@@ -1,7 +1,7 @@
 //! Service account persistence selects one authoritative database.
 use crate::storage_helpers::{seaorm_block_on, seaorm_enabled};
 use codexmanager_core::storage::*;
-use codexmanager_storage_seaorm::AccountsRepository;
+use codexmanager_storage_seaorm::{AccountsRepository, ResetCreditOperationsRepository};
 use std::{collections::HashMap, ops::Deref};
 pub(crate) struct AccountStorage<'a>(&'a Storage);
 impl<'a> AccountStorage<'a> {
@@ -19,6 +19,163 @@ fn storage_error(message: String) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure((), Some(message))
 }
 impl AccountStorage<'_> {
+    pub(crate) fn get_reset_credit_operation(
+        &self,
+        operation_id: &str,
+    ) -> rusqlite::Result<Option<ResetCreditOperation>> {
+        if !seaorm_enabled() {
+            return self.0.get_reset_credit_operation(operation_id);
+        }
+        let operation_id = operation_id.to_owned();
+        seaorm_block_on(move |remote| async move {
+            ResetCreditOperationsRepository::get(remote.connection(), &operation_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .map_err(storage_error)
+    }
+
+    pub(crate) fn find_pending_reset_credit_operation(
+        &self,
+        account_id: &str,
+    ) -> rusqlite::Result<Option<ResetCreditOperation>> {
+        if !seaorm_enabled() {
+            return self.0.find_pending_reset_credit_operation(account_id);
+        }
+        let account_id = account_id.to_owned();
+        seaorm_block_on(move |remote| async move {
+            ResetCreditOperationsRepository::find_pending(remote.connection(), &account_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .map_err(storage_error)
+    }
+
+    pub(crate) fn claim_reset_credit_operation(
+        &self,
+        operation_id: &str,
+        account_id: &str,
+        redeem_request_id: &str,
+        now: i64,
+    ) -> rusqlite::Result<ResetCreditOperationClaim> {
+        if !seaorm_enabled() {
+            return self.0.claim_reset_credit_operation(
+                operation_id,
+                account_id,
+                redeem_request_id,
+                now,
+            );
+        }
+        let operation_id = operation_id.to_owned();
+        let account_id = account_id.to_owned();
+        let redeem_request_id = redeem_request_id.to_owned();
+        seaorm_block_on(move |remote| async move {
+            ResetCreditOperationsRepository::claim(
+                remote.connection(),
+                &operation_id,
+                &account_id,
+                &redeem_request_id,
+                now,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        })
+        .map_err(storage_error)
+    }
+
+    pub(crate) fn complete_reset_credit_operation(
+        &self,
+        operation_id: &str,
+        account_id: &str,
+        result_json: &str,
+        now: i64,
+    ) -> rusqlite::Result<ResetCreditOperationUpdate> {
+        if !seaorm_enabled() {
+            return self.0.complete_reset_credit_operation(
+                operation_id,
+                account_id,
+                result_json,
+                now,
+            );
+        }
+        let operation_id = operation_id.to_owned();
+        let account_id = account_id.to_owned();
+        let result_json = result_json.to_owned();
+        seaorm_block_on(move |remote| async move {
+            ResetCreditOperationsRepository::complete(
+                remote.connection(),
+                &operation_id,
+                &account_id,
+                &result_json,
+                now,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        })
+        .map_err(storage_error)
+    }
+
+    pub(crate) fn fail_reset_credit_operation(
+        &self,
+        operation_id: &str,
+        account_id: &str,
+        error: &str,
+        now: i64,
+    ) -> rusqlite::Result<ResetCreditOperationUpdate> {
+        if !seaorm_enabled() {
+            return self
+                .0
+                .fail_reset_credit_operation(operation_id, account_id, error, now);
+        }
+        let operation_id = operation_id.to_owned();
+        let account_id = account_id.to_owned();
+        let error = error.to_owned();
+        seaorm_block_on(move |remote| async move {
+            ResetCreditOperationsRepository::fail(
+                remote.connection(),
+                &operation_id,
+                &account_id,
+                &error,
+                now,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        })
+        .map_err(storage_error)
+    }
+
+    pub(crate) fn update_completed_reset_credit_operation_result(
+        &self,
+        operation_id: &str,
+        account_id: &str,
+        result_json: &str,
+        now: i64,
+    ) -> rusqlite::Result<ResetCreditOperationUpdate> {
+        if !seaorm_enabled() {
+            return self.0.update_completed_reset_credit_operation_result(
+                operation_id,
+                account_id,
+                result_json,
+                now,
+            );
+        }
+        let operation_id = operation_id.to_owned();
+        let account_id = account_id.to_owned();
+        let result_json = result_json.to_owned();
+        seaorm_block_on(move |remote| async move {
+            ResetCreditOperationsRepository::update_completed_result(
+                remote.connection(),
+                &operation_id,
+                &account_id,
+                &result_json,
+                now,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        })
+        .map_err(storage_error)
+    }
+
     pub(crate) fn list_accounts(&self) -> rusqlite::Result<Vec<Account>> {
         if !seaorm_enabled() {
             return self.0.list_accounts();

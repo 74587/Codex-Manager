@@ -412,7 +412,15 @@ fn resolve_chatgpt_account_header<'a>(account: &'a Account, target_url: &str) ->
     account
         .chatgpt_account_id
         .as_deref()
-        .or(account.workspace_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            account
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
 }
 
 /// 函数 `resolve_request_compression_with_flag`
@@ -1027,7 +1035,15 @@ async fn send_upstream_request_with_compression_override(
     let account_id = account
         .chatgpt_account_id
         .as_deref()
-        .or_else(|| account.workspace_id.as_deref());
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            account
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
     let gemini_codex_compat = is_gemini_codex_compat(
         request_ctx.protocol_type,
         request_ctx.request_path,

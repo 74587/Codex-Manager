@@ -369,7 +369,7 @@ export function DirectAccountCard({
         </div>
         <CardDescription>
           {t(
-            "直连 OpenAI 官方后端，不经过 CodexManager 网关；不会产生 CodexManager 请求日志，仪表盘用量统计不可用。",
+            "直连 OpenAI 官方后端，不经过 CodexManager 网关；本机 Codex 的直连请求不会写入网关日志，但仪表盘仍会展示已记录的其他网关流量。",
           )}
         </CardDescription>
       </CardHeader>

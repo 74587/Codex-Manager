@@ -1,7 +1,10 @@
 //! DDL for the optional adapter only; the desktop SQLite migration chain is unchanged.
 
-use sea_orm::sea_query::{Index, IndexCreateStatement};
-use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, Schema, Statement};
+use sea_orm::sea_query::{Index, IndexCreateStatement, OnConflict};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, EntityTrait,
+    QueryFilter, QueryOrder, Schema, Set, Statement,
+};
 
 pub(crate) async fn migrate(db: &DatabaseConnection) -> Result<(), DbErr> {
     crate::desktop_history::migrate(db).await?;
@@ -41,6 +44,8 @@ pub(crate) async fn migrate(db: &DatabaseConnection) -> Result<(), DbErr> {
         schema.create_table_from_entity(crate::request_token_stats::Entity),
         schema.create_table_from_entity(crate::request_logs::Entity),
         schema.create_table_from_entity(crate::usage_snapshots::Entity),
+        schema.create_table_from_entity(crate::reset_credit_operations::Entity),
+        schema.create_table_from_entity(crate::reset_credit_operations::pending_accounts::Entity),
         schema.create_table_from_entity(crate::model_catalog::models::Entity),
         schema.create_table_from_entity(crate::model_catalog::prices::Entity),
         schema.create_table_from_entity(crate::model_catalog::price_tiers::Entity),
@@ -108,6 +113,33 @@ pub(crate) async fn migrate(db: &DatabaseConnection) -> Result<(), DbErr> {
     ensure_index(db, "request_logs", "idx_request_logs_created_id", index).await?;
     let mut index = Index::create();
     index
+        .name("idx_reset_credit_operations_account_created")
+        .table(crate::reset_credit_operations::Entity)
+        .col(crate::reset_credit_operations::Column::AccountId)
+        .col(crate::reset_credit_operations::Column::CreatedAt)
+        .col(crate::reset_credit_operations::Column::OperationId);
+    ensure_index(
+        db,
+        "reset_credit_operations",
+        "idx_reset_credit_operations_account_created",
+        index,
+    )
+    .await?;
+    let mut index = Index::create();
+    index
+        .name("idx_reset_credit_operation_accounts_operation")
+        .table(crate::reset_credit_operations::pending_accounts::Entity)
+        .col(crate::reset_credit_operations::pending_accounts::Column::OperationId)
+        .unique();
+    ensure_index(
+        db,
+        "reset_credit_operation_accounts",
+        "idx_reset_credit_operation_accounts_operation",
+        index,
+    )
+    .await?;
+    let mut index = Index::create();
+    index
         .name("idx_model_groups_status_sort")
         .table(crate::model_groups::groups::Entity)
         .col(crate::model_groups::groups::Column::Status)
@@ -162,6 +194,36 @@ pub(crate) async fn migrate(db: &DatabaseConnection) -> Result<(), DbErr> {
         index,
     )
     .await?;
+    backfill_reset_credit_operation_guards(db).await?;
+    Ok(())
+}
+
+async fn backfill_reset_credit_operation_guards(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let operations = crate::reset_credit_operations::Entity::find()
+        .filter(
+            crate::reset_credit_operations::Column::Status
+                .eq(codexmanager_core::storage::ResetCreditOperationStatus::Pending.as_str()),
+        )
+        .order_by_asc(crate::reset_credit_operations::Column::CreatedAt)
+        .order_by_asc(crate::reset_credit_operations::Column::OperationId)
+        .all(db)
+        .await?;
+    for operation in operations {
+        crate::reset_credit_operations::pending_accounts::Entity::insert(
+            crate::reset_credit_operations::pending_accounts::ActiveModel {
+                account_id: Set(operation.account_id),
+                operation_id: Set(operation.operation_id),
+                created_at: Set(operation.created_at),
+            },
+        )
+        .on_conflict(
+            OnConflict::column(crate::reset_credit_operations::pending_accounts::Column::AccountId)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec(db)
+        .await?;
+    }
     Ok(())
 }
 

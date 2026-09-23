@@ -1,7 +1,7 @@
 use super::{
-    clear_pending_usage_refresh_tasks_for_tests, enqueue_usage_refresh_with_worker,
-    load_token_refresh_issuers_for_tokens, next_usage_poll_cursor, notify_usage_refresh_completed,
-    refresh_usage_for_account_result, reset_usage_poll_cursor_for_tests,
+    enqueue_usage_refresh_with_worker, load_token_refresh_issuers_for_tokens,
+    next_usage_poll_cursor, notify_usage_refresh_completed, refresh_usage_for_account_result,
+    reset_usage_poll_cursor_for_tests, reset_usage_refresh_executor_for_tests,
     resolve_token_refresh_issuer, run_token_refresh_task, set_usage_refresh_completed_handler,
     should_retry_usage_refresh_with_token, subscribe_usage_refresh_completed,
     subscribe_usage_refresh_completed_async, token_refresh_access_exp_cutoff,
@@ -29,6 +29,10 @@ impl EnvGuard {
     fn set(key: &'static str, value: &str) -> Self {
         let original = std::env::var_os(key);
         std::env::set_var(key, value);
+        if key == "CODEXMANAGER_UPSTREAM_PROXY_URL" {
+            crate::gateway::reload_runtime_config_from_env();
+            crate::usage_http::reload_usage_http_client_from_env();
+        }
         Self { key, original }
     }
 }
@@ -38,6 +42,10 @@ impl Drop for EnvGuard {
         match &self.original {
             Some(value) => std::env::set_var(self.key, value),
             None => std::env::remove_var(self.key),
+        }
+        if self.key == "CODEXMANAGER_UPSTREAM_PROXY_URL" {
+            crate::gateway::reload_runtime_config_from_env();
+            crate::usage_http::reload_usage_http_client_from_env();
         }
     }
 }
@@ -272,6 +280,103 @@ async fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_
     let _ = std::fs::remove_file(&db_path);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn refresh_usage_without_chatgpt_account_identity_omits_header_and_succeeds() {
+    let _guard = crate::test_env_guard();
+    let db_path = unique_temp_db_path("usage-refresh-missing-chatgpt-account-id");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", &db_path);
+    let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+    let _ = std::fs::remove_file(&db_path);
+    crate::storage_helpers::initialize_storage().expect("init storage");
+
+    let server = Server::http("127.0.0.1:0").expect("start usage server");
+    let base_url = format!("http://{}", server.server_addr());
+    let _base_url_guard = EnvGuard::set("CODEXMANAGER_USAGE_BASE_URL", &base_url);
+    crate::usage_http::reload_usage_http_client_from_env();
+    let (request_tx, request_rx) = mpsc::channel();
+    let server_handle = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(5))
+            .expect("usage server timeout")
+            .expect("receive usage request");
+        let account_header = request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv("chatgpt-account-id"))
+            .map(|header| header.value.as_str().to_string());
+        request_tx
+            .send((request.url().to_string(), account_header))
+            .expect("record usage request");
+        request
+            .respond(
+                Response::from_string(r#"{"gpt4":{"usedPercent":8.0,"windowMinutes":180}}"#)
+                    .with_status_code(TinyStatusCode(200))
+                    .with_header(
+                        Header::from_bytes("Content-Type", "application/json")
+                            .expect("content-type header"),
+                    ),
+            )
+            .expect("respond usage request");
+    });
+
+    let now = now_ts();
+    let account_id = "acc-missing-chatgpt-account-id";
+    {
+        let storage = crate::storage_helpers::open_storage().expect("open storage");
+        storage
+            .insert_account(&Account {
+                id: account_id.to_string(),
+                label: "Phone login account".to_string(),
+                issuer: "https://auth.openai.com".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort: 0,
+                status: "active".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+        storage
+            .insert_token(&Token {
+                account_id: account_id.to_string(),
+                id_token: "phone-id-token-without-account-identity".to_string(),
+                access_token: "phone-access-token-without-account-identity".to_string(),
+                refresh_token: String::new(),
+                api_key_access_token: None,
+                last_refresh: now,
+            })
+            .expect("insert token");
+    }
+
+    let result = super::refresh_usage_for_account_result_async(account_id)
+        .await
+        .expect("refresh usage without account identity");
+    let (path, account_header) = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("receive recorded usage request");
+    server_handle.join().expect("join usage server");
+
+    assert!(result.ok);
+    assert_eq!(result.processed, 1);
+    assert_eq!(path, "/api/codex/usage");
+    assert_eq!(account_header, None);
+    let storage = crate::storage_helpers::open_storage().expect("open storage after refresh");
+    let account = storage
+        .find_account_by_id(account_id)
+        .expect("find account")
+        .expect("stored account");
+    assert_eq!(account.chatgpt_account_id, None);
+    assert_eq!(account.workspace_id, None);
+    assert!(storage
+        .latest_usage_snapshot_for_account(account_id)
+        .expect("find usage snapshot")
+        .is_some());
+    drop(storage);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
 /// 函数 `enqueue_usage_refresh_for_same_account_is_deduplicated_until_finish`
 ///
 /// 作者: gaohongshun
@@ -286,7 +391,7 @@ async fn refresh_usage_for_agent_identity_uses_assertion_and_skips_subscription_
 #[test]
 fn enqueue_usage_refresh_for_same_account_is_deduplicated_until_finish() {
     let _guard = crate::test_env_guard();
-    clear_pending_usage_refresh_tasks_for_tests();
+    reset_usage_refresh_executor_for_tests();
     let (started_tx, started_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
 
@@ -303,12 +408,11 @@ fn enqueue_usage_refresh_for_same_account_is_deduplicated_until_finish() {
     assert!(!second);
 
     let _ = release_tx.send(());
-    std::thread::sleep(Duration::from_millis(20));
+    reset_usage_refresh_executor_for_tests();
 
     let third = enqueue_usage_refresh_with_worker("acc-dedup", |_| {});
     assert!(third);
-    std::thread::sleep(Duration::from_millis(20));
-    clear_pending_usage_refresh_tasks_for_tests();
+    reset_usage_refresh_executor_for_tests();
 }
 
 /// 函数 `enqueue_usage_refresh_for_different_accounts_keeps_queue_progress`
@@ -325,14 +429,14 @@ fn enqueue_usage_refresh_for_same_account_is_deduplicated_until_finish() {
 #[test]
 fn enqueue_usage_refresh_for_different_accounts_keeps_queue_progress() {
     let _guard = crate::test_env_guard();
-    clear_pending_usage_refresh_tasks_for_tests();
+    reset_usage_refresh_executor_for_tests();
     let (started_tx, started_rx) = mpsc::channel::<String>();
     let (release_tx, release_rx) = mpsc::channel();
     let started_tx_first = started_tx.clone();
 
     let first = enqueue_usage_refresh_with_worker("acc-a", move |_| {
         let _ = started_tx_first.send("acc-a".to_string());
-        let _ = release_rx.recv_timeout(Duration::from_secs(1));
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
     });
     assert!(first);
 
@@ -343,11 +447,11 @@ fn enqueue_usage_refresh_for_different_accounts_keeps_queue_progress() {
     assert!(second);
 
     let first_started = started_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(5))
         .expect("first task should start");
     let _ = release_tx.send(());
     let second_started = started_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(5))
         .expect("second task should start");
 
     let seen: HashSet<String> = [first_started, second_started].into_iter().collect();
@@ -355,8 +459,7 @@ fn enqueue_usage_refresh_for_different_accounts_keeps_queue_progress() {
     assert!(seen.contains("acc-a"));
     assert!(seen.contains("acc-b"));
 
-    std::thread::sleep(Duration::from_millis(20));
-    clear_pending_usage_refresh_tasks_for_tests();
+    reset_usage_refresh_executor_for_tests();
 }
 
 /// 函数 `schedule_prefers_exp_minus_ahead`

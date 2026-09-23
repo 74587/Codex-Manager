@@ -1096,12 +1096,14 @@ mod tests {
         let requests = Arc::new(AtomicUsize::new(0));
         let server_requests = Arc::clone(&requests);
         let server_handle = thread::spawn(move || {
-            while let Ok(Some(request)) = server.recv_timeout(Duration::from_millis(300)) {
-                server_requests.fetch_add(1, Ordering::SeqCst);
-                request
-                    .respond(Response::empty(StatusCode(503)))
-                    .expect("respond task registration");
-            }
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .expect("receive task registration")
+                .expect("task registration request");
+            server_requests.fetch_add(1, Ordering::SeqCst);
+            request
+                .respond(Response::empty(StatusCode(503)))
+                .expect("respond task registration");
         });
 
         let first = resolve_or_bootstrap_account_agent_identity_authorization_with_base_url(

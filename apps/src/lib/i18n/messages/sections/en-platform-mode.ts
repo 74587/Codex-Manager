@@ -78,8 +78,8 @@ export const EN_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   账号直连: "Direct account",
   "OpenAI 账号": "OpenAI account",
   选择账号: "Select account",
-  "直连 OpenAI 官方后端，不经过 CodexManager 网关；不会产生 CodexManager 请求日志，仪表盘用量统计不可用。":
-    "Connect directly to the official OpenAI backend without going through the CodexManager gateway. CodexManager request logs and dashboard usage analytics will not be available.",
+  "直连 OpenAI 官方后端，不经过 CodexManager 网关；本机 Codex 的直连请求不会写入网关日志，但仪表盘仍会展示已记录的其他网关流量。":
+    "Connect directly to the official OpenAI backend without using the CodexManager gateway. Direct requests from Codex on this machine are not written to gateway logs, but the dashboard still shows other recorded gateway traffic.",
   "没有可用于账号直连的 active OpenAI 账号。":
     "No active OpenAI account is available for direct account mode.",
   "去添加 OpenAI 账号": "Add OpenAI account",

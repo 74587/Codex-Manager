@@ -5,6 +5,27 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[test]
+fn chatgpt_account_header_falls_back_when_stored_chatgpt_id_is_blank() {
+    let account = Account {
+        id: "header-fallback".to_string(),
+        label: "Header fallback".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: Some(" \t".to_string()),
+        workspace_id: Some(" workspace-fallback ".to_string()),
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    assert_eq!(
+        super::resolve_chatgpt_account_header(&account, "https://chatgpt.com/backend-api/codex"),
+        Some("workspace-fallback")
+    );
+}
+
 fn spawn_silent_sse_upstream() -> (String, mpsc::Receiver<bool>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock OpenAI upstream");
     let addr = listener.local_addr().expect("mock OpenAI upstream addr");

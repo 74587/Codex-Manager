@@ -78,8 +78,8 @@ export const KO_PLATFORM_MODE_MESSAGES: MessageCatalog = {
   账号直连: "계정 직결",
   "OpenAI 账号": "OpenAI 계정",
   选择账号: "계정 선택",
-  "直连 OpenAI 官方后端，不经过 CodexManager 网关；不会产生 CodexManager 请求日志，仪表盘用量统计不可用。":
-    "CodexManager 게이트웨이를 거치지 않고 OpenAI 공식 백엔드에 직접 연결합니다. CodexManager 요청 로그와 대시보드 사용량 통계는 사용할 수 없습니다.",
+  "直连 OpenAI 官方后端，不经过 CodexManager 网关；本机 Codex 的直连请求不会写入网关日志，但仪表盘仍会展示已记录的其他网关流量。":
+    "CodexManager 게이트웨이를 거치지 않고 OpenAI 공식 백엔드에 직접 연결합니다. 이 컴퓨터의 Codex 직결 요청은 게이트웨이 로그에 기록되지 않지만, 대시보드에는 기록된 다른 게이트웨이 트래픽이 계속 표시됩니다.",
   "没有可用于账号直连的 active OpenAI 账号。":
     "계정 직결에 사용할 수 있는 활성 OpenAI 계정이 없습니다.",
   "去添加 OpenAI 账号": "OpenAI 계정 추가",

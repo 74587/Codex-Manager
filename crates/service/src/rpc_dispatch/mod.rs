@@ -222,7 +222,6 @@ const MEMBER_METHOD_ALLOWLIST: &[&str] = &[
     "account/usage/aggregate",
     "account/usage/list",
     "account/usage/read",
-    "account/usage/resetCredits",
     "account/usage/refresh",
     "account/warmup",
     "accountManager/password/change",
@@ -254,7 +253,17 @@ fn member_method_allowed(method: &str) -> bool {
     MEMBER_METHOD_ALLOWLIST.contains(&method) || crate::current_web_auth_mode() == "password"
 }
 
+fn admin_only_method(method: &str) -> bool {
+    matches!(
+        method,
+        "account/usage/resetCredits" | "account/usage/resetCredit/consume"
+    )
+}
+
 fn ensure_method_allowed(actor: &RpcActor, method: &str) -> Result<(), String> {
+    if admin_only_method(method) && !actor.is_admin() {
+        return Err(permission_denied(method));
+    }
     if actor.is_admin() || member_method_allowed(method) {
         return Ok(());
     }

@@ -1,5 +1,8 @@
 use codexmanager_core::auth::{DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
-use codexmanager_core::storage::{Storage, Token};
+use codexmanager_core::storage::{
+    now_ts, ResetCreditOperation, ResetCreditOperationClaim, ResetCreditOperationStatus,
+    ResetCreditOperationUpdate, Storage, Token,
+};
 use codexmanager_core::usage::{ResetCreditConsumeResult, ResetCreditsSnapshot};
 use rand::RngCore;
 use std::collections::HashMap;
@@ -27,6 +30,9 @@ struct ResetCreditState {
 static RESET_CREDIT_LOCKS: OnceLock<Mutex<HashMap<String, Arc<ResetCreditState>>>> =
     OnceLock::new();
 const RESET_CREDIT_LOCK_POISONED_MESSAGE: &str = "reset credit lock poisoned; restart CodexManager, verify the account's reset-credit balance and usage state upstream, then retry";
+const RESET_CREDIT_RESULT_UNKNOWN_MESSAGE: &str = "reset credit operation result is unknown; refresh the reset-credit balance and usage state before trying again";
+const RESET_CREDIT_PENDING_OPERATION_PREFIX: &str = "reset_credit_pending_operation:";
+const RESET_CREDIT_TERMINAL_FAILURE_PREFIX: &str = "reset_credit_terminal_failure:";
 
 fn reset_credit_lock(account_id: &str) -> Arc<ResetCreditState> {
     let locks = RESET_CREDIT_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -208,7 +214,7 @@ async fn consume_with_retry(
     storage: &Storage,
     token: &mut Token,
     redeem_request_id: &str,
-) -> Result<(), String> {
+) -> Result<(), UsageActionHttpError> {
     let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     let base_url = usage_base_url();
     let mut chatgpt_account_id = resolve_account_header(storage, token);
@@ -223,7 +229,14 @@ async fn consume_with_retry(
     {
         Ok(()) => Ok(()),
         Err(error) if error.is_unauthorized() => {
-            refresh_token_for_reset(storage, token).await?;
+            refresh_token_for_reset(storage, token)
+                .await
+                .map_err(|message| UsageActionHttpError {
+                    // The first request was rejected with a definitive 401;
+                    // a refresh failure cannot make that request ambiguous.
+                    status: Some(reqwest::StatusCode::UNAUTHORIZED.as_u16()),
+                    message,
+                })?;
             chatgpt_account_id = resolve_account_header(storage, token);
             consume_for_account(
                 token.account_id.as_str(),
@@ -233,9 +246,8 @@ async fn consume_with_retry(
                 redeem_request_id,
             )
             .await
-            .map_err(|retry_error| retry_error.message)
         }
-        Err(error) => Err(error.message),
+        Err(error) => Err(error),
     }
 }
 
@@ -251,6 +263,101 @@ fn random_uuid_v4() -> String {
         bytes[8], bytes[9], bytes[10], bytes[11],
         bytes[12], bytes[13], bytes[14], bytes[15]
     )
+}
+
+fn is_uuid_v4(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || [8, 13, 18, 23]
+            .into_iter()
+            .any(|index| bytes[index] != b'-')
+        || bytes[14] != b'4'
+        || !matches!(bytes[19].to_ascii_lowercase(), b'8' | b'9' | b'a' | b'b')
+    {
+        return false;
+    }
+    bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| [8, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit())
+}
+
+fn stored_operation_result(
+    operation: &ResetCreditOperation,
+) -> Result<ResetCreditConsumeResult, String> {
+    match operation.status {
+        ResetCreditOperationStatus::Completed => operation
+            .result_json
+            .as_deref()
+            .ok_or_else(|| "completed reset credit operation has no saved result".to_string())
+            .and_then(|value| {
+                serde_json::from_str(value)
+                    .map_err(|error| format!("read saved reset credit result failed: {error}"))
+            }),
+        ResetCreditOperationStatus::Failed => Err(format!(
+            "{RESET_CREDIT_TERMINAL_FAILURE_PREFIX}{}",
+            operation
+                .error
+                .as_deref()
+                .unwrap_or("reset credit operation failed")
+        )),
+        ResetCreditOperationStatus::Pending => Err(format!(
+            "{RESET_CREDIT_PENDING_OPERATION_PREFIX}{}; {RESET_CREDIT_RESULT_UNKNOWN_MESSAGE}",
+            operation.operation_id
+        )),
+    }
+}
+
+fn fail_operation(
+    storage: &crate::account::remote_storage::AccountStorage<'_>,
+    operation_id: &str,
+    account_id: &str,
+    error: String,
+) -> Result<ResetCreditConsumeResult, String> {
+    match storage.fail_reset_credit_operation(operation_id, account_id, &error, now_ts()) {
+        Ok(ResetCreditOperationUpdate::Updated(operation))
+        | Ok(ResetCreditOperationUpdate::Existing(operation)) => {
+            stored_operation_result(&operation)
+        }
+        Ok(ResetCreditOperationUpdate::AccountConflict(_)) => Err(format!(
+            "{RESET_CREDIT_TERMINAL_FAILURE_PREFIX}{error}; operationId belongs to a different account"
+        )),
+        Ok(ResetCreditOperationUpdate::NotFound) => Err(format!(
+            "{RESET_CREDIT_TERMINAL_FAILURE_PREFIX}{error}; reset credit operation record is missing"
+        )),
+        Err(persist_error) => Err(format!(
+            "{error}; persist reset credit failure failed: {persist_error}; {RESET_CREDIT_RESULT_UNKNOWN_MESSAGE}"
+        )),
+    }
+}
+
+fn complete_operation(
+    storage: &crate::account::remote_storage::AccountStorage<'_>,
+    operation_id: &str,
+    account_id: &str,
+    result: &ResetCreditConsumeResult,
+) -> Result<(), String> {
+    let result_json = serde_json::to_string(result)
+        .map_err(|error| format!("serialize reset credit result failed: {error}"))?;
+    match storage.complete_reset_credit_operation(operation_id, account_id, &result_json, now_ts())
+    {
+        Ok(ResetCreditOperationUpdate::Updated(_)) => Ok(()),
+        Ok(ResetCreditOperationUpdate::Existing(operation))
+            if operation.status == ResetCreditOperationStatus::Completed =>
+        {
+            Ok(())
+        }
+        Ok(ResetCreditOperationUpdate::Existing(_)) => {
+            Err("reset credit operation reached an unexpected terminal state".to_string())
+        }
+        Ok(ResetCreditOperationUpdate::AccountConflict(_)) => {
+            Err("operationId belongs to a different account".to_string())
+        }
+        Ok(ResetCreditOperationUpdate::NotFound) => {
+            Err("reset credit operation record is missing".to_string())
+        }
+        Err(error) => Err(format!("persist reset credit completion failed: {error}")),
+    }
 }
 
 pub(crate) fn read_reset_credits(account_id: &str) -> Result<ResetCreditsSnapshot, String> {
@@ -272,41 +379,122 @@ pub(crate) async fn read_reset_credits_async(
     fetch_snapshot_with_retry(&storage, &mut token).await
 }
 
-pub(crate) fn consume_reset_credit(account_id: &str) -> Result<ResetCreditConsumeResult, String> {
-    crate::gateway::run_upstream_io(consume_reset_credit_async(account_id))?
+pub(crate) fn consume_reset_credit(
+    account_id: &str,
+    operation_id: &str,
+) -> Result<ResetCreditConsumeResult, String> {
+    crate::gateway::run_upstream_io(consume_reset_credit_async(account_id, operation_id))?
 }
 
 pub(crate) async fn consume_reset_credit_async(
     account_id: &str,
+    operation_id: &str,
 ) -> Result<ResetCreditConsumeResult, String> {
     let account_id = account_id.trim();
     if account_id.is_empty() {
         return Err("accountId is required".to_string());
     }
+    let operation_id = operation_id.trim();
+    if !is_uuid_v4(operation_id) {
+        return Err("operationId must be a UUID v4".to_string());
+    }
 
     let account_lock = reset_credit_lock(account_id);
     let _guard = account_lock.gate.lock().await;
-    if account_lock.interrupted.load(Ordering::Acquire) {
-        return Err(RESET_CREDIT_LOCK_POISONED_MESSAGE.to_string());
-    }
     let storage = open_storage()
         .map(|storage| storage.shared_handle())
         .ok_or_else(|| "storage unavailable".to_string())?;
     let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
-    let mut token = load_token(&storage, account_id)?;
+    let candidate_redeem_request_id = random_uuid_v4();
+    let resume_redeem_request_id = match storage
+        .claim_reset_credit_operation(
+            operation_id,
+            account_id,
+            &candidate_redeem_request_id,
+            now_ts(),
+        )
+        .map_err(|error| format!("claim reset credit operation failed: {error}"))?
+    {
+        ResetCreditOperationClaim::Created(_) => None,
+        ResetCreditOperationClaim::Existing(operation) => {
+            if operation.status == ResetCreditOperationStatus::Pending {
+                Some(operation.redeem_request_id)
+            } else {
+                return stored_operation_result(&operation);
+            }
+        }
+        ResetCreditOperationClaim::PendingAccount(operation) => {
+            return stored_operation_result(&operation);
+        }
+        ResetCreditOperationClaim::AccountConflict(_) => {
+            return Err("operationId belongs to a different account".to_string());
+        }
+    };
+    let is_resume = resume_redeem_request_id.is_some();
+    let redeem_request_id = resume_redeem_request_id.unwrap_or(candidate_redeem_request_id);
+    if !is_resume && account_lock.interrupted.load(Ordering::Acquire) {
+        return fail_operation(
+            storage,
+            operation_id,
+            account_id,
+            RESET_CREDIT_LOCK_POISONED_MESSAGE.to_string(),
+        );
+    }
+    let mut token = match load_token(&storage, account_id) {
+        Ok(token) => token,
+        Err(error) => {
+            return fail_operation(storage, operation_id, account_id, error);
+        }
+    };
 
-    let before = fetch_snapshot_with_retry(&storage, &mut token).await?;
-    if before.available_count.unwrap_or(0) <= 0 {
-        return Err("no reset credits are currently available".to_string());
+    if !is_resume {
+        let before = match fetch_snapshot_with_retry(&storage, &mut token).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return fail_operation(storage, operation_id, account_id, error);
+            }
+        };
+        if before.available_count.unwrap_or(0) <= 0 {
+            return fail_operation(
+                storage,
+                operation_id,
+                account_id,
+                "no reset credits are currently available".to_string(),
+            );
+        }
     }
 
-    let redeem_request_id = random_uuid_v4();
-    // Cancellation after sending may leave an unknown provider outcome. Keep
-    // the account closed to another redemption until explicitly reconciled.
+    // A replay of the same operation reuses the durable redeem id. If the first
+    // request reached the provider, its idempotency key lets the provider return
+    // the original outcome instead of charging a second credit.
     account_lock.interrupted.store(true, Ordering::Release);
     let consume_result = consume_with_retry(&storage, &mut token, &redeem_request_id).await;
     account_lock.interrupted.store(false, Ordering::Release);
-    consume_result?;
+    if let Err(error) = consume_result {
+        if error.is_ambiguous_non_idempotent() {
+            return Err(format!(
+                "{}; {}",
+                error.message, RESET_CREDIT_RESULT_UNKNOWN_MESSAGE
+            ));
+        }
+        return fail_operation(storage, operation_id, account_id, error.message);
+    }
+
+    // Commit the provider-confirmed result before any follow-up query. A slow
+    // usage refresh must never turn a completed redemption into a replay.
+    let committed_result = ResetCreditConsumeResult {
+        consumed: true,
+        usage_refreshed: false,
+        snapshot: None,
+        warning: Some("usage refresh is still pending; refresh manually if needed".to_string()),
+    };
+    if let Err(error) = complete_operation(storage, operation_id, account_id, &committed_result) {
+        account_lock.interrupted.store(true, Ordering::Release);
+        return Err(format!(
+            "reset credit was accepted upstream but its local result could not be recorded; {error}; {}",
+            RESET_CREDIT_RESULT_UNKNOWN_MESSAGE
+        ));
+    }
 
     let usage_refresh_error = crate::usage_refresh::refresh_usage_for_account_async(account_id)
         .await
@@ -319,12 +507,27 @@ pub(crate) async fn consume_reset_credit_async(
         .collect::<Vec<_>>()
         .join("; ");
 
-    Ok(ResetCreditConsumeResult {
+    let result = ResetCreditConsumeResult {
         consumed: true,
         usage_refreshed: usage_refresh_error.is_none(),
         snapshot: snapshot_result.ok(),
         warning: (!warning.is_empty()).then_some(warning),
-    })
+    };
+    if let Err(error) = storage.update_completed_reset_credit_operation_result(
+        operation_id,
+        account_id,
+        &serde_json::to_string(&result).map_err(|serialize_error| {
+            format!("serialize reset credit result failed: {serialize_error}")
+        })?,
+        now_ts(),
+    ) {
+        log::warn!(
+            "event=reset_credit_operation_result_update_failed operation_id={} error={}",
+            operation_id,
+            error
+        );
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -333,12 +536,19 @@ mod async_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{random_uuid_v4, resolve_account_header, RESET_CREDIT_LOCK_POISONED_MESSAGE};
-    use codexmanager_core::storage::{now_ts, Account, Storage, Token};
+    use super::{
+        is_uuid_v4, random_uuid_v4, resolve_account_header, stored_operation_result,
+        RESET_CREDIT_LOCK_POISONED_MESSAGE, RESET_CREDIT_PENDING_OPERATION_PREFIX,
+        RESET_CREDIT_TERMINAL_FAILURE_PREFIX,
+    };
+    use codexmanager_core::storage::{
+        now_ts, Account, ResetCreditOperation, ResetCreditOperationStatus, Storage, Token,
+    };
 
     #[test]
     fn generated_redeem_request_id_is_uuid_v4() {
         let value = random_uuid_v4();
+        assert!(is_uuid_v4(&value));
         assert_eq!(value.len(), 36);
         assert_eq!(&value[14..15], "4");
         assert!(matches!(&value[19..20], "8" | "9" | "a" | "b"));
@@ -349,10 +559,56 @@ mod tests {
     }
 
     #[test]
+    fn operation_id_validation_requires_uuid_v4() {
+        assert!(is_uuid_v4("01234567-89ab-4def-8abc-0123456789ab"));
+        assert!(!is_uuid_v4("01234567-89ab-1def-8abc-0123456789ab"));
+        assert!(!is_uuid_v4("not-a-uuid"));
+    }
+
+    #[test]
     fn poisoned_lock_message_is_actionable() {
         assert!(RESET_CREDIT_LOCK_POISONED_MESSAGE.contains("restart CodexManager"));
         assert!(RESET_CREDIT_LOCK_POISONED_MESSAGE.contains("verify"));
         assert!(RESET_CREDIT_LOCK_POISONED_MESSAGE.contains("then retry"));
+    }
+
+    #[test]
+    fn stored_pending_operation_exposes_recoverable_operation_id() {
+        let operation = ResetCreditOperation {
+            operation_id: "01234567-89ab-4def-8abc-0123456789ab".to_string(),
+            account_id: "account-1".to_string(),
+            redeem_request_id: "redeem-1".to_string(),
+            status: ResetCreditOperationStatus::Pending,
+            result_json: None,
+            error: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let error = stored_operation_result(&operation).expect_err("pending operation");
+        assert!(error.contains(&format!(
+            "{RESET_CREDIT_PENDING_OPERATION_PREFIX}{}",
+            operation.operation_id
+        )));
+    }
+
+    #[test]
+    fn stored_failed_operation_is_marked_as_terminal() {
+        let operation = ResetCreditOperation {
+            operation_id: "01234567-89ab-4def-8abc-0123456789ab".to_string(),
+            account_id: "account-1".to_string(),
+            redeem_request_id: "redeem-1".to_string(),
+            status: ResetCreditOperationStatus::Failed,
+            result_json: None,
+            error: Some("provider rejected".to_string()),
+            created_at: 1,
+            updated_at: 2,
+        };
+
+        assert_eq!(
+            stored_operation_result(&operation).expect_err("failed operation"),
+            format!("{RESET_CREDIT_TERMINAL_FAILURE_PREFIX}provider rejected")
+        );
     }
 
     #[test]

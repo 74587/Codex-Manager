@@ -86,11 +86,22 @@ pub(crate) async fn warmup_accounts_async(
     }
 
     let warmup_message = normalize_warmup_message(message);
-    let warmup_model = resolve_warmup_model_slug(&storage);
     let mut results = Vec::with_capacity(accounts.len());
     let mut succeeded = 0usize;
 
     for target in accounts.drain(..) {
+        let warmup_model = match resolve_warmup_model_slug(&storage, &target) {
+            Ok(model) => model,
+            Err(err) => {
+                results.push(AccountWarmupItemResult {
+                    account_id: target.account.id,
+                    account_name: target.account.label,
+                    ok: false,
+                    message: err,
+                });
+                continue;
+            }
+        };
         let client = match build_warmup_client_for_account(&target.account.id) {
             Ok(client) => client,
             Err(err) => {
@@ -154,7 +165,7 @@ pub(crate) async fn warmup_account_after_reset(
     let storage = &crate::account::remote_storage::AccountStorage::new(storage);
     let target = resolve_reset_warmup_target(storage, account_id)?;
     let client = build_warmup_client_for_account(account_id)?;
-    let model = resolve_warmup_model_slug(storage);
+    let model = resolve_warmup_model_slug(storage, &target)?;
     Ok(warmup_single_account(
         storage,
         &client,
@@ -415,19 +426,73 @@ fn extract_status_code_from_message(message: &str) -> i64 {
     digits.parse::<i64>().unwrap_or(500)
 }
 
-fn resolve_warmup_model_slug(storage: &Storage) -> String {
+fn resolve_warmup_model_slug(
+    storage: &Storage,
+    target: &AccountWarmupTarget,
+) -> Result<String, String> {
+    let configured_ceiling = crate::gateway::current_free_account_max_model();
+    resolve_warmup_model_slug_with_ceiling(storage, target, &configured_ceiling)
+}
+
+fn resolve_warmup_model_slug_with_ceiling(
+    storage: &Storage,
+    target: &AccountWarmupTarget,
+    configured_ceiling: &str,
+) -> Result<String, String> {
     let storage = &crate::account::remote_storage::AccountStorage::new(storage);
-    storage
+    let models = storage
         .list_api_models_v2()
-        .ok()
-        .and_then(|models| {
-            models
-                .into_iter()
-                .find(crate::models_v2::supports_text_generation)
-                .map(|model| model.slug)
-        })
-        .filter(|slug| !slug.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string())
+        .map_err(|err| format!("list warmup models failed: {err}"))?;
+    let first_text_model = models
+        .iter()
+        .find(|model| crate::models_v2::supports_text_generation(model));
+    let ceiling = configured_ceiling.trim();
+    if ceiling.is_empty() || ceiling.eq_ignore_ascii_case("auto") {
+        return Ok(first_text_model
+            .map(|model| model.slug.clone())
+            .filter(|slug| !slug.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string()));
+    }
+
+    let snapshot = storage
+        .latest_usage_snapshot_for_account(&target.account.id)
+        .map_err(|err| format!("read warmup account usage failed: {err}"))?;
+    let subscription = storage
+        .find_account_subscription(&target.account.id)
+        .map_err(|err| format!("read warmup account subscription failed: {err}"))?;
+    let token_plan = crate::account_plan::token_plan_from_token(&target.token);
+    let is_free_or_unknown = match crate::account_plan::resolve_effective_account_plan(
+        Some(&token_plan),
+        snapshot.as_ref(),
+        subscription.as_ref(),
+    ) {
+        Some(plan) => matches!(plan.normalized.as_str(), "free" | "unknown"),
+        // Missing plan metadata is not proof of a paid account. Apply the
+        // conservative Free ceiling until a refresh provides a plan signal.
+        None => true,
+    };
+    if !is_free_or_unknown {
+        return Ok(first_text_model
+            .map(|model| model.slug.clone())
+            .filter(|slug| !slug.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_WARMUP_MODEL.to_string()));
+    }
+
+    for model in models
+        .iter()
+        .filter(|model| crate::models_v2::supports_text_generation(model))
+    {
+        let exceeds =
+            crate::models_v2::request_exceeds_model_ceiling(storage, Some(&model.slug), ceiling)
+                .map_err(|err| format!("read warmup model ceiling failed: {err}"))?;
+        if !exceeds {
+            return Ok(model.slug.clone());
+        }
+    }
+
+    Err(format!(
+        "no enabled text-generation model is available at or below the Free account ceiling: {ceiling}"
+    ))
 }
 
 pub(crate) async fn resolve_warmup_authorization(

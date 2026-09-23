@@ -62,7 +62,9 @@ test("Codex 接入方式页面展示当前状态和切换影响", async () => {
   assert.match(source, /CodexManager 本地目录/);
   assert.match(source, /应用后/);
   assert.match(source, /高级与恢复/);
-  assert.match(source, /不会产生 CodexManager 请求日志/);
+  assert.match(source, /本机 Codex 的直连请求不会写入网关日志/);
+  assert.match(source, /仪表盘仍会展示已记录的其他网关流量/);
+  assert.doesNotMatch(source, /仪表盘用量统计不可用/);
   assert.match(source, /请求日志、Token、费用估算和仪表盘统计可用/);
   assert.match(source, /CodexManager 管理文件/);
   assert.match(source, /备份保存在 CodexManager 数据目录/);

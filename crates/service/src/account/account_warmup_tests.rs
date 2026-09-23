@@ -1,6 +1,6 @@
 use super::{
     build_warmup_headers, consume_warmup_stream, finish_warmup_attempt,
-    resolve_reset_warmup_target, resolve_target_accounts, resolve_warmup_model_slug,
+    resolve_reset_warmup_target, resolve_target_accounts, resolve_warmup_model_slug_with_ceiling,
     should_retry_warmup_with_refresh, summarize_warmup_error, WarmupAuthorization,
     DEFAULT_WARMUP_MODEL,
 };
@@ -192,8 +192,8 @@ fn disable_seed_models(storage: &Storage) {
 
 #[test]
 fn resolve_warmup_model_slug_uses_first_supported_model_from_catalog_order() {
-    let storage = Storage::open_in_memory().expect("open in-memory storage");
-    storage.init().expect("init in-memory storage");
+    let (storage, account) = reset_warmup_fixture();
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
     disable_seed_models(&storage);
     let mut hidden = make_model("gpt-hidden", 0, true);
     hidden.model.visibility = "hide".to_string();
@@ -214,15 +214,242 @@ fn resolve_warmup_model_slug_uses_first_supported_model_from_catalog_order() {
             .expect("save model catalog V2 item");
     }
 
-    assert_eq!(resolve_warmup_model_slug(&storage), "gpt-latest");
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "auto").unwrap(),
+        "gpt-latest"
+    );
 }
 
 #[test]
 fn resolve_warmup_model_slug_falls_back_when_catalog_missing() {
-    let storage = Storage::open_in_memory().expect("open in-memory storage");
-    storage.init().expect("init in-memory storage");
+    let (storage, account) = reset_warmup_fixture();
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
     disable_seed_models(&storage);
-    assert_eq!(resolve_warmup_model_slug(&storage), DEFAULT_WARMUP_MODEL);
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "auto").unwrap(),
+        DEFAULT_WARMUP_MODEL
+    );
+}
+
+#[test]
+fn resolve_warmup_model_slug_honors_free_account_model_ceiling() {
+    let (storage, account) = reset_warmup_fixture();
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account.id.clone(),
+            used_percent: Some(10.0),
+            window_minutes: Some(300),
+            resets_at: Some(now_ts() + 3600),
+            secondary_used_percent: Some(20.0),
+            secondary_window_minutes: Some(10080),
+            secondary_resets_at: Some(now_ts() + 86400),
+            credits_json: Some(r#"{"planType":"free"}"#.to_string()),
+            captured_at: now_ts(),
+        })
+        .expect("insert Free usage snapshot");
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
+    disable_seed_models(&storage);
+    for model in [
+        make_model("gpt-newest", 1, true),
+        make_model("gpt-free-boundary", 2, true),
+        make_model("gpt-older", 3, true),
+    ] {
+        storage
+            .upsert_managed_model_v2(&model)
+            .expect("save model catalog V2 item");
+    }
+
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "gpt-free-boundary").unwrap(),
+        "gpt-free-boundary"
+    );
+
+    let paid_account = Account {
+        id: "paid-account".to_string(),
+        label: "Paid account".to_string(),
+        ..account
+    };
+    storage
+        .insert_account(&paid_account)
+        .expect("insert paid account");
+    storage
+        .insert_token(&Token {
+            account_id: paid_account.id.clone(),
+            id_token: String::new(),
+            access_token: "paid-access-token".to_string(),
+            refresh_token: "paid-refresh-token".to_string(),
+            api_key_access_token: None,
+            last_refresh: now_ts(),
+        })
+        .expect("insert paid token");
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: paid_account.id.clone(),
+            used_percent: Some(10.0),
+            window_minutes: Some(300),
+            resets_at: Some(now_ts() + 3600),
+            secondary_used_percent: Some(20.0),
+            secondary_window_minutes: Some(10080),
+            secondary_resets_at: Some(now_ts() + 86400),
+            credits_json: Some(r#"{"planType":"plus"}"#.to_string()),
+            captured_at: now_ts(),
+        })
+        .expect("insert paid usage snapshot");
+    let paid_target =
+        resolve_reset_warmup_target(&storage, &paid_account.id).expect("resolve paid target");
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &paid_target, "gpt-free-boundary")
+            .unwrap(),
+        "gpt-newest"
+    );
+}
+
+#[test]
+fn resolve_warmup_model_slug_treats_missing_plan_metadata_as_free_until_refreshed() {
+    let (storage, account) = reset_warmup_fixture();
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
+    disable_seed_models(&storage);
+    for model in [
+        make_model("gpt-newest", 1, true),
+        make_model("gpt-free-boundary", 2, true),
+        make_model("gpt-older", 3, true),
+    ] {
+        storage
+            .upsert_managed_model_v2(&model)
+            .expect("save model catalog V2 item");
+    }
+
+    // The fixture has no usable plan in either the token or usage snapshot.
+    // Until a refresh resolves it, warmup must stay within the Free ceiling.
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "gpt-free-boundary")
+            .expect("resolve conservative warmup model"),
+        "gpt-free-boundary"
+    );
+}
+
+#[test]
+fn resolve_warmup_model_slug_treats_unknown_plan_as_free_until_refreshed() {
+    let (storage, account) = reset_warmup_fixture();
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account.id.clone(),
+            used_percent: Some(10.0),
+            window_minutes: Some(300),
+            resets_at: Some(now_ts() + 3_600),
+            secondary_used_percent: Some(20.0),
+            secondary_window_minutes: Some(10_080),
+            secondary_resets_at: Some(now_ts() + 86_400),
+            credits_json: Some(r#"{"planType":"unknown"}"#.to_string()),
+            captured_at: now_ts(),
+        })
+        .expect("insert unknown-plan usage snapshot");
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
+    disable_seed_models(&storage);
+    for model in [
+        make_model("gpt-newest", 1, true),
+        make_model("gpt-free-boundary", 2, true),
+        make_model("gpt-older", 3, true),
+    ] {
+        storage
+            .upsert_managed_model_v2(&model)
+            .expect("save model catalog V2 item");
+    }
+
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "gpt-free-boundary")
+            .expect("resolve conservative warmup model"),
+        "gpt-free-boundary"
+    );
+}
+
+#[test]
+fn resolve_warmup_model_slug_treats_inactive_or_expired_paid_subscription_as_free() {
+    let (storage, account) = reset_warmup_fixture();
+    let now = now_ts();
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account.id.clone(),
+            used_percent: Some(10.0),
+            window_minutes: Some(300),
+            resets_at: Some(now + 3_600),
+            secondary_used_percent: Some(20.0),
+            secondary_window_minutes: Some(10_080),
+            secondary_resets_at: Some(now + 86_400),
+            credits_json: Some(r#"{"planType":"plus"}"#.to_string()),
+            captured_at: now,
+        })
+        .expect("insert stale paid usage snapshot");
+    disable_seed_models(&storage);
+    for model in [
+        make_model("gpt-newest", 1, true),
+        make_model("gpt-free-boundary", 2, true),
+        make_model("gpt-older", 3, true),
+    ] {
+        storage
+            .upsert_managed_model_v2(&model)
+            .expect("save model catalog V2 item");
+    }
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
+
+    storage
+        .upsert_account_subscription(
+            &account.id,
+            false,
+            Some("pro"),
+            Some("plus"),
+            Some(now + 3_600),
+            None,
+        )
+        .expect("store inactive paid subscription");
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "gpt-free-boundary").unwrap(),
+        "gpt-free-boundary"
+    );
+
+    storage
+        .upsert_account_subscription(
+            &account.id,
+            true,
+            Some("pro"),
+            Some("plus"),
+            Some(now - 1),
+            None,
+        )
+        .expect("store expired paid subscription");
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(&storage, &target, "gpt-free-boundary").unwrap(),
+        "gpt-free-boundary"
+    );
+}
+
+#[test]
+fn resolve_warmup_model_slug_selects_seeded_luna_for_free_account() {
+    let (storage, account) = reset_warmup_fixture();
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account.id.clone(),
+            used_percent: Some(10.0),
+            window_minutes: Some(300),
+            resets_at: Some(now_ts() + 3600),
+            secondary_used_percent: Some(20.0),
+            secondary_window_minutes: Some(10080),
+            secondary_resets_at: Some(now_ts() + 86400),
+            credits_json: Some(r#"{"planType":"free"}"#.to_string()),
+            captured_at: now_ts(),
+        })
+        .expect("insert Free usage snapshot");
+    let target = resolve_reset_warmup_target(&storage, &account.id).expect("resolve target");
+
+    assert_eq!(
+        resolve_warmup_model_slug_with_ceiling(
+            &storage,
+            &target,
+            codexmanager_core::usage::LUNA_MODEL_SLUG,
+        )
+        .unwrap(),
+        codexmanager_core::usage::LUNA_MODEL_SLUG
+    );
 }
 
 #[test]

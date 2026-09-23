@@ -14,9 +14,14 @@ pub(super) async fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> 
         Some(id) if req.method == "account/usage/resetCredits" => {
             super::value_or_error(crate::usage_reset_credits::read_reset_credits_async(id).await)
         }
-        Some(id) => {
-            super::value_or_error(crate::usage_reset_credits::consume_reset_credit_async(id).await)
-        }
+        Some(id) => match super::str_param(req, "operationId")
+            .or_else(|| super::str_param(req, "operation_id"))
+        {
+            Some(operation_id) => super::value_or_error(
+                crate::usage_reset_credits::consume_reset_credit_async(id, operation_id).await,
+            ),
+            None => super::value_or_error::<()>(Err("operationId is required".to_owned())),
+        },
     };
     Some(super::response(req, result))
 }

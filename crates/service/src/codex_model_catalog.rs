@@ -318,7 +318,15 @@ fn official_chatgpt_account_id<'a>(account: &'a Account, upstream_base: &str) ->
     account
         .chatgpt_account_id
         .as_deref()
-        .or(account.workspace_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            account
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
 }
 
 fn official_catalog_cache_path(api_key_id: &str) -> PathBuf {
@@ -858,5 +866,59 @@ mod tests {
         let err = serialize_gateway_model_catalog(&ModelsResponse::default())
             .expect_err("empty catalog must fail");
         assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn official_model_sync_omits_empty_account_identity_header_value() {
+        let account = Account {
+            id: "account-1".to_string(),
+            label: "Account 1".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("  ".to_string()),
+            workspace_id: Some("\t".to_string()),
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert_eq!(
+            official_chatgpt_account_id(&account, "https://chatgpt.com/backend-api/codex"),
+            None
+        );
+
+        let account = Account {
+            id: "account-1b".to_string(),
+            label: "Account 1b".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("  ".to_string()),
+            workspace_id: Some(" workspace-456 ".to_string()),
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert_eq!(
+            official_chatgpt_account_id(&account, "https://chatgpt.com/backend-api/codex"),
+            Some("workspace-456")
+        );
+
+        let account = Account {
+            id: "account-2".to_string(),
+            label: "Account 2".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("  account-123  ".to_string()),
+            workspace_id: Some("workspace-456".to_string()),
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert_eq!(
+            official_chatgpt_account_id(&account, "https://chatgpt.com/backend-api/codex"),
+            Some("account-123")
+        );
     }
 }

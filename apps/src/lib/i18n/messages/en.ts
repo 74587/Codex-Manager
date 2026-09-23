@@ -1753,14 +1753,14 @@ export const EN_MESSAGES: MessageCatalog = {
   转发路径: "Forwarded path",
   上游模型: "Upstream model",
   实际来源: "Actual source",
-  "账号直连模式不会产生新的 CodexManager 请求日志":
-    "Direct account mode does not create new CodexManager request logs",
-  "这里仅展示历史网关请求；如需记录请求，请切换到本地网关模式。":
-    "Only historical gateway requests are shown here; switch to local gateway mode if you need request logging.",
+  "本机 Codex 的账号直连请求不会写入此日志":
+    "Direct-account requests from Codex on this machine are not written to this log",
+  "下方仍展示 CodexManager 已记录的网关请求，包括其他客户端通过平台密钥产生的流量。":
+    "The list below still shows gateway requests recorded by CodexManager, including traffic from other clients using platform keys.",
   去切换为本地网关: "Switch to local gateway",
   仅网关流量: "Gateway traffic only",
-  "账号直连模式下不会产生请求日志，如需记录请求请切换到本地网关模式。":
-    "Direct account mode does not generate request logs. Switch to local gateway mode if you need logging.",
+  "当前筛选下暂无已记录的网关请求；本机 Codex 的账号直连请求不会写入此日志。":
+    "No recorded gateway requests match the current filters. Direct-account requests from Codex on this machine are not written to this log.",
   未分配: "Unassigned",
   按我的平台密钥累计: "Accumulated by my platform keys",
   归属成员: "Owner member",

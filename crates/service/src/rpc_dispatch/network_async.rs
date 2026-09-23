@@ -146,8 +146,9 @@ mod tests {
             "codexSkills/registryInstall",
             "codexProfile/applyDirectAccount",
             "codexProfile/applyGateway",
-            "account/usage/resetCredit/consume",
             "system/proxy/test",
+            "account/usage/resetCredits",
+            "account/usage/resetCredit/consume",
         ] {
             let req = JsonRpcRequest {
                 id: 42.into(),
@@ -162,6 +163,27 @@ mod tests {
             let actual = serde_json::to_value(actual).unwrap();
             assert_eq!(actual, serde_json::to_value(expected).unwrap(), "{method}");
             assert_eq!(
+                actual["result"]["errorCode"], "permission_denied",
+                "{method}"
+            );
+        }
+        for method in [
+            "account/usage/resetCredits",
+            "account/usage/resetCredit/consume",
+        ] {
+            let req = JsonRpcRequest {
+                id: 44.into(),
+                method: method.into(),
+                params: None,
+                trace: None,
+            };
+            let actual = serde_json::to_value(
+                try_handle_network_request_async(&req, &crate::RpcActor::system_admin())
+                    .await
+                    .expect("admin reset-credit method is routed"),
+            )
+            .unwrap();
+            assert_ne!(
                 actual["result"]["errorCode"], "permission_denied",
                 "{method}"
             );

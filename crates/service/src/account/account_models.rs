@@ -252,13 +252,19 @@ pub(crate) async fn fetch_account_models_async(
         .header(ACCEPT_ENCODING, "identity")
         .header(USER_AGENT, crate::gateway::current_gateway_user_agent())
         .header("originator", crate::gateway::current_wire_originator());
-    if let Some(chatgpt_account_id) = account
+    let chatgpt_account_id = account
         .chatgpt_account_id
         .as_deref()
-        .or(account.workspace_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
+        .or_else(|| {
+            account
+                .workspace_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+    if let Some(chatgpt_account_id) = chatgpt_account_id {
         request = request.header("ChatGPT-Account-ID", chatgpt_account_id);
     }
 

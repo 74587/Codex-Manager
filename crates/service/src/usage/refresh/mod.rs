@@ -192,9 +192,9 @@ use self::errors::{
     mark_usage_unreachable_if_needed, record_usage_refresh_failure, should_retry_with_refresh,
 };
 #[cfg(test)]
-use self::queue::clear_pending_usage_refresh_tasks_for_tests;
-#[cfg(test)]
 pub(crate) use self::queue::enqueue_usage_refresh_with_worker;
+#[cfg(test)]
+use self::queue::reset_usage_refresh_executor_for_tests;
 use self::runner::{
     gateway_keepalive_loop, token_refresh_polling_loop, usage_polling_loop, warmup_cron_loop,
 };

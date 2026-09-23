@@ -179,6 +179,41 @@ pub(crate) fn policy_catalog_slug(model_slug: &str) -> &str {
     }
 }
 
+pub(crate) fn request_exceeds_model_ceiling(
+    storage: &codexmanager_core::storage::Storage,
+    request_model: Option<&str>,
+    configured_ceiling: &str,
+) -> rusqlite::Result<bool> {
+    let ceiling = configured_ceiling.trim();
+    let Some(request_model) = request_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    if ceiling.is_empty() || ceiling.eq_ignore_ascii_case("auto") {
+        return Ok(false);
+    }
+
+    let ceiling_catalog_slug = policy_catalog_slug(ceiling);
+    let request_catalog_slug = policy_catalog_slug(request_model);
+    if ceiling_catalog_slug.eq_ignore_ascii_case(request_catalog_slug) {
+        return Ok(false);
+    }
+
+    let ceiling_model = enabled_model(storage, ceiling_catalog_slug)?;
+    let request_model = enabled_model(storage, request_catalog_slug)?;
+
+    // The catalog is ordered from highest to lowest priority. Unknown models
+    // cannot be proven to stay within a concrete ceiling, so fail closed.
+    Ok(match (request_model, ceiling_model) {
+        (Some(request_model), Some(ceiling_model)) => {
+            request_model.sort_order < ceiling_model.sort_order
+        }
+        _ => true,
+    })
+}
+
 pub(crate) fn should_preserve_luna_reserve_alias(
     request_model: Option<&str>,
     configured_model: Option<&str>,

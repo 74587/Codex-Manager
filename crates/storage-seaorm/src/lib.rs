@@ -38,6 +38,7 @@ mod request_log_retention;
 mod request_logs;
 mod request_token_stats;
 mod request_usage_summary;
+mod reset_credit_operations;
 mod usage_analytics;
 pub use usage_analytics::UsageAnalyticsRepository;
 mod settings;
@@ -59,6 +60,7 @@ pub use model_groups::{
 };
 pub use request_logs::{RequestLogFilter, RequestLogRecord, RequestLogsRepository};
 pub use request_token_stats::{RequestTokenStatRecord, RequestTokenStatsRepository};
+pub use reset_credit_operations::ResetCreditOperationsRepository;
 pub use settings::{AppSetting, SettingsRepository};
 pub use usage_snapshots::{UsageSnapshotRow, UsageSnapshotsRepository};
 pub use users::UsersRepository;

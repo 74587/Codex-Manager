@@ -61,6 +61,20 @@ impl UsageActionHttpError {
     pub(crate) fn is_unauthorized(&self) -> bool {
         self.status == Some(reqwest::StatusCode::UNAUTHORIZED.as_u16())
     }
+
+    /// A non-success response from a non-idempotent POST can still be emitted
+    /// after the upstream accepted the request. Keep the durable operation
+    /// pending for transport failures and retryable server responses.
+    pub(crate) fn is_ambiguous_non_idempotent(&self) -> bool {
+        match self.status {
+            None => true,
+            Some(status) => {
+                status == reqwest::StatusCode::REQUEST_TIMEOUT.as_u16()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS.as_u16()
+                    || status >= 500
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for UsageActionHttpError {
@@ -1300,26 +1314,17 @@ pub(crate) async fn consume_reset_credit_request_async(
             message,
         }
     })?;
-    let response = match build_request(client).send().await {
-        Ok(response) => response,
-        Err(first_error) => {
-            let retry_client =
-                refresh_usage_http_client_for_proxy(explicit_proxy_url).map_err(|message| {
-                    UsageActionHttpError {
-                        status: None,
-                        message,
-                    }
-                })?;
-            build_request(retry_client).send().await.map_err(|second_error| {
-                UsageActionHttpError {
-                    status: None,
-                    message: format!(
-                        "request reset credit consume failed: {first_error}; retry_after_client_rebuild: {second_error}"
-                    ),
-                }
-            })?
-        }
-    };
+    // This POST is non-idempotent. A reqwest send error does not prove that the
+    // request stayed local; retrying with a rebuilt client could redeem the same
+    // credit twice. Leave the durable operation pending so the caller can report
+    // an unknown outcome and reconcile it before attempting another operation.
+    let response = build_request(client)
+        .send()
+        .await
+        .map_err(|error| UsageActionHttpError {
+            status: None,
+            message: format!("request reset credit consume failed: {error}"),
+        })?;
     let status = response.status();
     let headers = response.headers().clone();
     let body = read_response_text(response, USAGE_HTTP_TOTAL_TIMEOUT).await;

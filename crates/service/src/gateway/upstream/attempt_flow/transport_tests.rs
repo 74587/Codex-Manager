@@ -163,6 +163,27 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
         .map(|(_, value)| value.as_str())
 }
 
+#[test]
+fn chatgpt_account_header_falls_back_when_stored_chatgpt_id_is_blank() {
+    let account = codexmanager_core::storage::Account {
+        id: "header-fallback".to_string(),
+        label: "Header fallback".to_string(),
+        issuer: "https://auth.openai.com".to_string(),
+        chatgpt_account_id: Some(" \t".to_string()),
+        workspace_id: Some(" workspace-fallback ".to_string()),
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    assert_eq!(
+        super::resolve_chatgpt_account_header(&account, "https://chatgpt.com/backend-api/codex"),
+        Some("workspace-fallback")
+    );
+}
+
 fn mock_websocket_config() -> WebSocketConfig {
     let mut config = WebSocketConfig::default();
     let mut extensions = ExtensionsConfig::default();
@@ -855,7 +876,9 @@ fn stream_transport_does_not_fast_close_successful_sse_body() {
 fn stream_transport_timeout_does_not_cap_active_body_duration() {
     let _env_lock = crate::test_env_guard();
     let _reload_guard = RuntimeConfigReloadGuard;
-    let _stream_timeout_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS", "200");
+    // Keep enough headroom for a busy CI host to establish the local socket;
+    // the body deliberately remains active longer than this header deadline.
+    let _stream_timeout_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS", "1000");
     crate::gateway::reload_runtime_config_from_env();
 
     let chunks = vec![
@@ -864,7 +887,7 @@ fn stream_transport_timeout_does_not_cap_active_body_duration() {
         b"data: {\"type\":\"response.completed\"}\n\n".to_vec(),
     ];
     let expected = chunks.concat();
-    let (url, handle) = spawn_active_streaming_http_response(chunks, Duration::from_millis(80));
+    let (url, handle) = spawn_active_streaming_http_response(chunks, Duration::from_millis(400));
 
     let response = send_mock_stream_request(url.as_str());
     assert_eq!(response.status(), reqwest::StatusCode::OK);
