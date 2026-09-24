@@ -5,9 +5,24 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-24
+
 ### Added
 
 - Added quota reset warmup for OpenAI accounts, enabled by default. Exhausted 5-hour windows trigger a short message at their recorded reset time, followed by a usage refresh. Per-account and bulk switches are persisted, attempts are deduplicated across restarts, and disabled accounts or exhausted weekly quotas are skipped.
+- Added direct aggregate API access for Codex. Active Codex or Compatible Responses API-key entries can be selected with their configured authentication headers and User-Agent, without routing through the local gateway (#475).
+
+### Changed
+
+- Completed the production hardening for the asynchronous service and SeaORM storage migration, including transaction, shutdown, and acceptance gates across remote accounts, aggregate APIs, API keys, usage, logs, and gateway paths.
+- Unified model status-card styling. Applying models now applies the full catalog when nothing is selected, limits the operation to selected models otherwise, and synchronizes pricing and catalog metadata.
+- Model deletion now removes records. Deleted built-in models receive a tombstone so startup seeding does not restore them.
+- Bumped the workspace, frontend, Tauri desktop metadata, and lockfiles to `0.6.1`.
+
+### Fixed
+
+- Fixed successful aggregate API responses being reported as 502 when a Windows client disconnected. Downstream `os error 10053/10054/10058` conditions are now treated as client disconnects (#479).
+- Fixed account, aggregate API, quota-reset, and candidate-routing edge cases after the asynchronous service migration, with stronger transaction rollback and production configuration checks.
 
 ## [0.6.0] - 2026-09-05
 
