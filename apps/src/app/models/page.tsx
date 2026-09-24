@@ -397,10 +397,15 @@ export default function ModelsPage() {
 
   const applyCurrentModels = () => {
     const status = codexModeStatus.status;
-    if (!status || !canApplyModels || selectedSlugs.length === 0) return;
+    if (!status || !canApplyModels) return;
+    const modelSlugs =
+      selectedSlugs.length > 0
+        ? [...selectedSlugs]
+        : models.map((model) => model.slug);
+    if (modelSlugs.length === 0) return;
     void applyModels({
       codexHome: status.codexHome,
-      modelSlugs: [...selectedSlugs],
+      modelSlugs,
     });
   };
 
@@ -424,22 +429,17 @@ export default function ModelsPage() {
 
   const confirmDeleteDescription = useMemo(() => {
     if (deleteSlugs.length === 0) return "";
-    const builtinCount = deleteSlugs.filter(
-      (slug) => models.find((model) => model.slug === slug)?.origin === "builtin",
-    ).length;
     if (deleteSlugs.length === 1) {
-      const model = models.find((item) => item.slug === deleteSlugs[0]);
-      return model?.origin === "builtin"
-        ? t("内置模型 {slug} 将从本地网关目录隐藏并禁用，数据不会删除。此操作不影响直接连接 OpenAI 或使用官方目录的账号池。", {
-            slug: model.slug,
-          })
-        : t("确定要从本地网关目录永久删除自定义模型 {slug} 吗？此操作不影响直接连接 OpenAI 或使用官方目录的账号池。", { slug: deleteSlugs[0] });
+      return t(
+        "确定要从本地网关目录永久删除模型 {slug} 吗？此操作不影响直接连接 OpenAI 或使用官方目录的账号池。",
+        { slug: deleteSlugs[0] },
+      );
     }
     return t(
-      "将处理本地网关目录中的 {count} 个模型：{builtin} 个内置模型会被隐藏并禁用，其余自定义模型会被删除。此操作不影响直接连接 OpenAI 或使用官方目录的账号池。",
-      { count: deleteSlugs.length, builtin: builtinCount },
+      "确定要从本地网关目录永久删除这 {count} 个模型吗？此操作不影响直接连接 OpenAI 或使用官方目录的账号池。",
+      { count: deleteSlugs.length },
     );
-  }, [deleteSlugs, models, t]);
+  }, [deleteSlugs, t]);
 
   return (
     <>
@@ -470,7 +470,6 @@ export default function ModelsPage() {
                   variant="outline"
                   disabled={
                     !canApplyModels ||
-                    selectedSlugs.length === 0 ||
                     isModelMutationPending
                   }
                   onClick={applyCurrentModels}
@@ -511,7 +510,7 @@ export default function ModelsPage() {
         />
 
         {isAdminMode ? (
-          <Card className="border-primary/20 bg-primary/5">
+          <Card className="glass-card">
             <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
@@ -558,7 +557,7 @@ export default function ModelsPage() {
                   {t("显示来源、启用状态、价格状态、指令模式和路由状态。")}
                   {isAdminMode ? (
                     <span className="mt-0.5 block text-primary/80">
-                      {t("请先勾选一个或多个模型，再应用到 Codex 或使用批量操作。")}
+                      {t("未勾选模型时会应用全部模型；勾选后仅应用所选模型。批量操作仍需先勾选模型。")}
                     </span>
                   ) : null}
                 </p>
@@ -752,7 +751,7 @@ export default function ModelsPage() {
                                 <Button type="button" variant="ghost" size="icon" disabled={isModelOperationPending} aria-label={t("编辑模型 {slug}", { slug: model.slug })} onClick={() => openEditor(model.slug)}>
                                   <PencilLine className="h-4 w-4" />
                                 </Button>
-                                <Button type="button" variant="ghost" size="icon" disabled={isModelOperationPending} aria-label={model.origin === "builtin" ? t("从本地网关目录隐藏模型 {slug}", { slug: model.slug }) : t("从本地网关目录删除模型 {slug}", { slug: model.slug })} onClick={() => setDeleteSlugs([model.slug])}>
+                                <Button type="button" variant="ghost" size="icon" disabled={isModelOperationPending} aria-label={t("从本地网关目录删除模型 {slug}", { slug: model.slug })} onClick={() => setDeleteSlugs([model.slug])}>
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
                               </div>
@@ -812,9 +811,9 @@ export default function ModelsPage() {
           onOpenChange={(open) => {
             if (!open) setDeleteSlugs([]);
           }}
-          title={deleteSlugs.length > 1 ? t("从本地网关目录批量移除模型") : t("从本地网关目录移除模型")}
+          title={deleteSlugs.length > 1 ? t("从本地网关目录批量删除模型") : t("从本地网关目录删除模型")}
           description={confirmDeleteDescription}
-          confirmText={isDeleting ? t("处理中...") : t("移除")}
+          confirmText={isDeleting ? t("处理中...") : t("删除")}
           confirmVariant="destructive"
           onConfirm={async () => {
             const targets = [...deleteSlugs];
@@ -826,7 +825,7 @@ export default function ModelsPage() {
               return succeeded;
             }
             const result = await deleteModels(targets);
-            const processed = new Set([...result.hidden, ...result.deleted]);
+            const processed = new Set(result.deleted);
             setSelectedSlugs((current) =>
               current.filter((slug) => !processed.has(slug)),
             );

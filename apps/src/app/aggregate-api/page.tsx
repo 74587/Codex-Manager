@@ -53,6 +53,7 @@ import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
+import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import {
   buildAggregateApiListQueryKey,
   buildApiKeyListQueryKey,
@@ -236,6 +237,9 @@ export default function AggregateApiPage() {
         queryClient.invalidateQueries({ queryKey: managedModelSelectorQueryKey }),
         queryClient.invalidateQueries({ queryKey: apiKeyListQueryKey }),
         queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
+        queryClient.invalidateQueries({
+          queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,
+        }),
       ]);
       toast.success(t("聚合 API 已删除"));
     },
@@ -287,6 +291,9 @@ export default function AggregateApiPage() {
         queryClient.invalidateQueries({ queryKey: aggregateApiListQueryKey }),
         queryClient.invalidateQueries({ queryKey: apiKeyListQueryKey }),
         queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
+        queryClient.invalidateQueries({
+          queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,
+        }),
       ]);
       toast.success(t("状态已更新"));
     },

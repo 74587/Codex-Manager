@@ -230,6 +230,9 @@ test("createWebCommandMap 为 Codex profile 管理提供 Web RPC 映射", () => 
   assert.deepEqual(commandMap.service_codex_profile_apply_direct_account, {
     rpcMethod: "codexProfile/applyDirectAccount",
   });
+  assert.deepEqual(commandMap.service_codex_profile_apply_direct_aggregate, {
+    rpcMethod: "codexProfile/applyDirectAggregate",
+  });
   assert.deepEqual(commandMap.service_codex_profile_apply_gateway, {
     rpcMethod: "codexProfile/applyGateway",
   });

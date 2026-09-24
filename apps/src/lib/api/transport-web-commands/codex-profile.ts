@@ -6,6 +6,7 @@ export function createCodexProfileWebCommands(): Record<string, WebCommandDescri
     service_codex_profile_set_config: { rpcMethod: "codexProfile/setConfig" },
     service_codex_profile_list_candidates: { rpcMethod: "codexProfile/listCandidates" },
     service_codex_profile_apply_direct_account: { rpcMethod: "codexProfile/applyDirectAccount" },
+    service_codex_profile_apply_direct_aggregate: { rpcMethod: "codexProfile/applyDirectAggregate" },
     service_codex_profile_apply_gateway: { rpcMethod: "codexProfile/applyGateway" },
     service_codex_profile_apply_models: { rpcMethod: "codexProfile/applyModels" },
     service_codex_profile_restore: { rpcMethod: "codexProfile/restore" },

@@ -68,6 +68,21 @@ fn normalize_header_key(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
 
+fn is_client_delivery_error(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("broken pipe")
+        || normalized.contains("downstream http body closed")
+        || normalized.contains("connection reset")
+        || normalized.contains("connection aborted")
+        || normalized.contains("connection was forcibly closed")
+        || normalized.contains("os error 32")
+        || normalized.contains("os error 54")
+        || normalized.contains("os error 104")
+        || normalized.contains("os error 10053")
+        || normalized.contains("os error 10054")
+        || normalized.contains("os error 10058")
+}
+
 fn normalize_action_path(action: &str) -> String {
     let action_trimmed = action.trim();
     if action_trimmed.is_empty() {
@@ -1207,12 +1222,11 @@ impl AggregateDeliveryContext {
         } else {
             status_code
         };
-        let status_code = if bridge.delivery_error.as_deref().is_some_and(|error| {
-            let error = error.to_ascii_lowercase();
-            error.contains("broken pipe")
-                || error.contains("downstream http body closed")
-                || error.contains("connection reset")
-        }) {
+        let status_code = if bridge
+            .delivery_error
+            .as_deref()
+            .is_some_and(is_client_delivery_error)
+        {
             499
         } else {
             status_code

@@ -10,6 +10,14 @@ pub(super) async fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> 
             )
             .await,
         ),
+        "codexProfile/applyDirectAggregate" => super::value_or_error(
+            crate::codex_profile::apply_direct_aggregate_async(
+                super::str_param(req, "aggregateApiId"),
+                super::str_param(req, "codexHome"),
+                super::bool_param(req, "reloadAfterSwitch").unwrap_or(false),
+            )
+            .await,
+        ),
         "codexProfile/applyGateway" => super::value_or_error(
             crate::codex_profile::apply_gateway_async(
                 super::str_param(req, "apiKeyId"),

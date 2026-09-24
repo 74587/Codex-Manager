@@ -10,6 +10,7 @@ macro_rules! invoke_handler {
             crate::commands::codex_profile::service_codex_profile_set_config,
             crate::commands::codex_profile::service_codex_profile_list_candidates,
             crate::commands::codex_profile::service_codex_profile_apply_direct_account,
+            crate::commands::codex_profile::service_codex_profile_apply_direct_aggregate,
             crate::commands::codex_profile::service_codex_profile_apply_gateway,
             crate::commands::codex_profile::service_codex_profile_apply_models,
             crate::commands::codex_profile::service_codex_profile_restore,

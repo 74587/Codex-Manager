@@ -2,7 +2,7 @@ use codexmanager_core::storage::{now_ts, AggregateApi, Storage};
 
 use super::{
     build_aggregate_api_request, build_anthropic_bridge_aggregate_api_request, build_upstream_url,
-    effective_action_path, resolve_aggregate_api_rotation_candidates,
+    effective_action_path, is_client_delivery_error, resolve_aggregate_api_rotation_candidates,
     resolve_passthrough_sse_protocol, responses_to_anthropic_messages_action_path,
     rewrite_body_model_override, should_bridge_responses_to_anthropic, AggregateApiAuthConfig,
 };
@@ -241,6 +241,17 @@ fn aggregate_request_user_agent_override_replaces_conflicting_auth_header() {
         .collect::<Vec<_>>();
     assert_eq!(values, vec!["Aggregate-Override/4.0"]);
     assert!(!values.iter().any(|value| value.contains("must-not-leak")));
+}
+
+#[test]
+fn aggregate_delivery_recognizes_windows_client_disconnect_errors() {
+    assert!(is_client_delivery_error(
+        "你的主机中的软件中止了一个已建立的连接。 (os error 10053)"
+    ));
+    assert!(is_client_delivery_error(
+        "An existing connection was forcibly closed by the remote host. (os error 10054)"
+    ));
+    assert!(!is_client_delivery_error("upstream returned status 502"));
 }
 
 #[test]

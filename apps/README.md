@@ -48,6 +48,7 @@ pnpm exec playwright test
 - 模型管理页的“应用模型”只把管理员勾选的模型写入 `gateway-models.json`，并在目标 `CODEX_HOME/config.toml` 更新 `model_catalog_json`；它不要求平台密钥，也不会改写现有认证、模型提供方或网关地址。
 - 应用时不按 enabled、`supportedInApi`、visibility 或文本生成能力过滤，`gpt-image-2` 和明确勾选的隐藏模型也能进入 Codex 模型列表。操作不会终止 Codex 后台进程；关闭并重新打开 Codex 后读取新目录。
 - 模型管理页不提供写入或下载 `~/.codex/models_cache.json` 的入口；Codex 通过 `model_catalog_json` 指向的 `gateway-models.json` 读取已应用的模型列表。
+- 平台模式页支持 OpenAI 账号直连、Codex/Compatible Responses 聚合 API 直连和 CodexManager 本地网关三种接入方式；聚合 API 直连只接纳可映射为 Responses `base_url` 的 API-key 条目。
 - 平台模式页提供“切换后重载 Codex 后台”开关；默认开启，只匹配使用目标 `CODEX_HOME` 的 app-server，不会终止前台 Codex CLI。
 
 ### Web 部署

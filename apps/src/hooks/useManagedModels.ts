@@ -47,7 +47,6 @@ const EMPTY_STATS: ModelCatalogV2Stats = {
 };
 
 type BatchDeleteManagedModelsResult = {
-  hidden: string[];
   deleted: string[];
   failed: Array<{ slug: string; reason: string }>;
 };
@@ -137,27 +136,16 @@ export function useManagedModels() {
   };
 
   const applyCommittedDeletesToCache = (
-    hiddenSlugs: string[],
     deletedSlugs: string[],
   ): void => {
-    const hidden = new Set(hiddenSlugs);
     const deleted = new Set(deletedSlugs);
     queryClient.setQueryData<ManagedModelListV2Result>(
       managedModelsQueryKey,
       (current) => {
         if (!current) return current;
-        const items = current.items
-          .filter((model) => !deleted.has(model.slug))
-          .map((model) =>
-            hidden.has(model.slug)
-              ? {
-                  ...model,
-                  enabled: false,
-                  visibility: "hide" as const,
-                  userEdited: true,
-                }
-              : model,
-          );
+        const items = current.items.filter(
+          (model) => !deleted.has(model.slug),
+        );
         return { items, stats: buildCatalogStats(items) };
       },
     );
@@ -282,26 +270,12 @@ export function useManagedModels() {
 
   const deleteMutation = useMutation({
     mutationFn: async (slug: string) => {
-      const catalog =
-        queryClient.getQueryData<ManagedModelListV2Result>(
-          managedModelsQueryKey,
-        ) ?? query.data;
-      const isBuiltin =
-        catalog?.items.find((model) => model.slug === slug)?.origin ===
-        "builtin";
       await managedModelsV2Client.delete(slug, serviceAddr);
-      return { isBuiltin, slug };
+      return slug;
     },
-    onSuccess: ({ isBuiltin, slug }) => {
-      applyCommittedDeletesToCache(
-        isBuiltin ? [slug] : [],
-        isBuiltin ? [] : [slug],
-      );
-      toast.success(
-        isBuiltin
-          ? t("已隐藏内置模型 {slug}", { slug })
-          : t("已删除自定义模型 {slug}", { slug }),
-      );
+    onSuccess: (slug) => {
+      applyCommittedDeletesToCache([slug]);
+      toast.success(t("已删除模型 {slug}", { slug }));
       void refreshCatalogAfterCommittedMutation();
     },
     onError: (error: unknown) => {
@@ -314,61 +288,33 @@ export function useManagedModels() {
       const normalizedSlugs = Array.from(
         new Set(slugs.map((slug) => slug.trim()).filter(Boolean)),
       );
-      const catalog =
-        queryClient.getQueryData<ManagedModelListV2Result>(
-          managedModelsQueryKey,
-        ) ?? query.data;
-      const hidden: string[] = [];
       const deleted: string[] = [];
       const failed: Array<{ slug: string; reason: string }> = [];
       for (const slug of normalizedSlugs) {
         try {
           await managedModelsV2Client.delete(slug, serviceAddr);
-          if (
-            catalog?.items.find((model) => model.slug === slug)?.origin ===
-            "builtin"
-          ) {
-            hidden.push(slug);
-          } else {
-            deleted.push(slug);
-          }
+          deleted.push(slug);
         } catch (error) {
           failed.push({ slug, reason: getAppErrorMessage(error) });
         }
       }
-      return { hidden, deleted, failed };
+      return { deleted, failed };
     },
     onSuccess: (result) => {
-      const processedCount = result.hidden.length + result.deleted.length;
+      const processedCount = result.deleted.length;
       if (processedCount > 0) {
-        applyCommittedDeletesToCache(result.hidden, result.deleted);
+        applyCommittedDeletesToCache(result.deleted);
       }
       if (processedCount > 0 && result.failed.length === 0) {
-        if (result.hidden.length > 0 && result.deleted.length > 0) {
-          toast.success(
-            t("已隐藏 {hidden} 个内置模型，并删除 {deleted} 个自定义模型", {
-              hidden: result.hidden.length,
-              deleted: result.deleted.length,
-            }),
-          );
-        } else if (result.hidden.length > 0) {
-          toast.success(
-            t("已隐藏 {count} 个内置模型", {
-              count: result.hidden.length,
-            }),
-          );
-        } else {
-          toast.success(
-            t("已删除 {count} 个自定义模型", {
-              count: result.deleted.length,
-            }),
-          );
-        }
+        toast.success(
+          t("已删除 {count} 个模型", {
+            count: result.deleted.length,
+          }),
+        );
       } else if (processedCount > 0) {
         toast.warning(
-          t("批量处理完成：隐藏{hidden}个，删除{deleted}个，失败{failed}个", {
-            hidden: result.hidden.length,
-            deleted: result.deleted.length,
+          t("批量删除完成：成功{success}个，失败{failed}个", {
+            success: result.deleted.length,
             failed: result.failed.length,
           }),
         );
@@ -639,7 +585,7 @@ export function useManagedModels() {
     },
     deleteModels: async (slugs: string[]) => {
       if (!ensureServiceReady("批量删除模型")) {
-        return { hidden: [], deleted: [], failed: [] };
+        return { deleted: [], failed: [] };
       }
       return batchDeleteMutation.mutateAsync(slugs);
     },

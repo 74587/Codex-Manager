@@ -1,5 +1,5 @@
 use super::*;
-use codexmanager_core::storage::{Account, ApiKey, ManagedModelV2Upsert, Storage};
+use codexmanager_core::storage::{Account, AggregateApi, ApiKey, ManagedModelV2Upsert, Storage};
 use rusqlite::Connection;
 
 #[tokio::test(flavor = "current_thread")]
@@ -160,6 +160,38 @@ fn test_account(id: &str, status: &str) -> Account {
         updated_at: now_ts(),
     }
 }
+
+fn test_aggregate_api(id: &str, provider_type: &str, status: &str) -> AggregateApi {
+    let now = now_ts();
+    AggregateApi {
+        id: id.to_string(),
+        provider_type: provider_type.to_string(),
+        supplier_name: Some(format!("Supplier {id}")),
+        sort: 0,
+        url: "https://aggregate.example.test".to_string(),
+        auth_type: crate::aggregate_api::AGGREGATE_API_AUTH_APIKEY.to_string(),
+        auth_params_json: None,
+        action: None,
+        model_override: None,
+        user_agent: None,
+        status: status.to_string(),
+        created_at: now,
+        updated_at: now,
+        last_test_at: None,
+        last_test_status: None,
+        last_test_error: None,
+        balance_query_enabled: false,
+        balance_query_template: None,
+        balance_query_base_url: None,
+        balance_query_user_id: None,
+        balance_query_config_json: None,
+        last_balance_at: None,
+        last_balance_status: None,
+        last_balance_error: None,
+        last_balance_json: None,
+    }
+}
+
 fn test_token(account_id: &str, access_token: &str, refresh_token: &str) -> Token {
     Token {
         account_id: account_id.to_string(),
@@ -853,7 +885,9 @@ custom_setting = true
         mode: CodexProfileMode::Unmanaged,
         account_id: None,
         api_key_id: None,
+        aggregate_api_id: None,
         gateway_base_url: None,
+        aggregate_api_base_url: None,
         supports_websockets: None,
         provider_id: "external".to_string(),
         previous_model_catalog_json: Some("C:/previous-models.json".to_string()),
@@ -1271,6 +1305,162 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
     assert_eq!(force_account.status, "force_enabled");
     cleanup_profile(&dir);
 }
+
+#[test]
+fn list_candidates_only_exposes_directly_compatible_aggregate_apis() {
+    let _lock = crate::test_env_guard();
+    let dir = temp_profile("codex-profile-aggregate-candidates");
+    let _db_guard = set_test_db(&dir);
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open storage");
+    storage.init().expect("init storage");
+
+    let mut direct = test_aggregate_api("agg-direct", "codex", "active");
+    direct.sort = -10;
+    direct.user_agent = Some("Aggregate-Direct/1.0".to_string());
+    storage
+        .insert_aggregate_api(&direct)
+        .expect("insert direct aggregate api");
+
+    let disabled = test_aggregate_api("agg-disabled", "compatible", "disabled");
+    storage
+        .insert_aggregate_api(&disabled)
+        .expect("insert disabled aggregate api");
+
+    let unsupported_provider = test_aggregate_api("agg-claude", "claude", "active");
+    storage
+        .insert_aggregate_api(&unsupported_provider)
+        .expect("insert unsupported aggregate api");
+
+    let mut query_auth = test_aggregate_api("agg-query", "codex", "active");
+    query_auth.auth_params_json =
+        Some(serde_json::json!({"location":"query","name":"key"}).to_string());
+    storage
+        .insert_aggregate_api(&query_auth)
+        .expect("insert query-auth aggregate api");
+    drop(storage);
+
+    let result = list_candidates().expect("list candidates");
+
+    assert_eq!(result.aggregate_apis.len(), 1);
+    let candidate = &result.aggregate_apis[0];
+    assert_eq!(candidate.id, direct.id);
+    assert_eq!(candidate.label, "Supplier agg-direct");
+    assert_eq!(candidate.base_url, "https://aggregate.example.test/v1");
+    assert_eq!(candidate.sort, -10);
+    assert_eq!(
+        candidate.user_agent.as_deref(),
+        Some("Aggregate-Direct/1.0")
+    );
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn direct_aggregate_profile_writes_upstream_provider_and_tracks_selection() {
+    let _lock = crate::test_env_guard();
+    let dir = temp_profile("codex-profile-direct-aggregate");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    fs::create_dir_all(&dir).expect("create profile dir");
+    fs::write(
+        dir.join(CONFIG_FILE),
+        "model_provider = \"external\"\ncustom_setting = true\n",
+    )
+    .expect("write existing config");
+
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open storage");
+    storage.init().expect("init storage");
+    let mut aggregate = test_aggregate_api("agg-profile", "compatible", "active");
+    aggregate.supplier_name = Some("Profile Aggregate".to_string());
+    aggregate.url = "https://aggregate.example.test/openai".to_string();
+    aggregate.action = Some("/v1/responses".to_string());
+    aggregate.user_agent = Some("Profile-Aggregate/2.0".to_string());
+    storage
+        .insert_aggregate_api(&aggregate)
+        .expect("insert aggregate api");
+    storage
+        .upsert_aggregate_api_secret(&aggregate.id, "aggregate-secret")
+        .expect("insert aggregate api secret");
+    drop(storage);
+
+    let status = apply_direct_aggregate_async(
+        Some(&aggregate.id),
+        Some(dir.to_string_lossy().as_ref()),
+        false,
+    )
+    .await
+    .expect("apply direct aggregate profile");
+
+    assert!(matches!(status.mode, CodexProfileMode::DirectAggregate));
+    assert_eq!(
+        status.selected_aggregate_api_id.as_deref(),
+        Some(aggregate.id.as_str())
+    );
+    assert_eq!(
+        status.aggregate_api_base_url.as_deref(),
+        Some("https://aggregate.example.test/openai/v1")
+    );
+    assert_eq!(status.provider_id, DIRECT_AGGREGATE_PROVIDER_ID);
+    assert!(!status.supports_websockets);
+
+    let auth: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(dir.join(AUTH_FILE)).expect("read direct aggregate auth"),
+    )
+    .expect("parse direct aggregate auth");
+    assert_eq!(auth["auth_mode"], "apikey");
+    assert_eq!(auth["OPENAI_API_KEY"], "aggregate-secret");
+
+    let config = parse_config(
+        &fs::read_to_string(dir.join(CONFIG_FILE)).expect("read direct aggregate config"),
+    )
+    .expect("parse direct aggregate config");
+    assert_eq!(
+        config.get("model_provider").and_then(Item::as_str),
+        Some(DIRECT_AGGREGATE_PROVIDER_ID)
+    );
+    assert_eq!(
+        config.get("custom_setting").and_then(Item::as_bool),
+        Some(true)
+    );
+    let provider = config
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(DIRECT_AGGREGATE_PROVIDER_ID))
+        .and_then(Item::as_table)
+        .expect("direct aggregate provider");
+    assert_eq!(
+        provider.get("base_url").and_then(Item::as_str),
+        Some("https://aggregate.example.test/openai/v1")
+    );
+    assert_eq!(
+        provider.get("wire_api").and_then(Item::as_str),
+        Some("responses")
+    );
+    assert_eq!(
+        provider
+            .get("experimental_bearer_token")
+            .and_then(Item::as_str),
+        Some("aggregate-secret")
+    );
+    assert_eq!(
+        provider_http_header(provider, "User-Agent"),
+        Some("Profile-Aggregate/2.0")
+    );
+
+    let marker = read_marker(
+        &managed_profile_paths(&dir)
+            .expect("managed profile paths")
+            .marker_path,
+    )
+    .expect("read managed marker");
+    assert!(matches!(marker.mode, CodexProfileMode::DirectAggregate));
+    assert_eq!(
+        marker.aggregate_api_id.as_deref(),
+        Some(aggregate.id.as_str())
+    );
+    cleanup_profile(&dir);
+}
+
 #[test]
 fn restore_optional_file_removes_files_that_were_missing() {
     let dir = temp_profile("restore-missing");
@@ -1547,7 +1737,9 @@ experimental_bearer_token = "cm-key"
         mode: CodexProfileMode::DirectAccount,
         account_id: Some("acc-1".to_string()),
         api_key_id: None,
+        aggregate_api_id: None,
         gateway_base_url: None,
+        aggregate_api_base_url: None,
         supports_websockets: None,
         provider_id: PROVIDER_ID.to_string(),
         managed_model_slugs: Vec::new(),
@@ -1617,7 +1809,9 @@ fn write_profile_files_uses_internal_marker() {
         mode: CodexProfileMode::Gateway,
         account_id: None,
         api_key_id: Some("key-1".to_string()),
+        aggregate_api_id: None,
         gateway_base_url: Some("http://localhost:48760/v1".to_string()),
+        aggregate_api_base_url: None,
         supports_websockets: Some(false),
         provider_id: PROVIDER_ID.to_string(),
         previous_model_catalog_json: None,
@@ -1677,7 +1871,9 @@ fn legacy_marker_migrates_to_internal_marker() {
         mode: CodexProfileMode::DirectAccount,
         account_id: Some("acc-1".to_string()),
         api_key_id: None,
+        aggregate_api_id: None,
         gateway_base_url: None,
+        aggregate_api_base_url: None,
         supports_websockets: None,
         provider_id: PROVIDER_ID.to_string(),
         managed_model_slugs: Vec::new(),

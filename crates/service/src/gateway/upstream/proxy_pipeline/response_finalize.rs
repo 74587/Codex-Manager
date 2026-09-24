@@ -58,6 +58,9 @@ fn is_client_disconnect_error(message: &str) -> bool {
         || normalized.contains("os error 32")
         || normalized.contains("os error 54")
         || normalized.contains("os error 104")
+        || normalized.contains("os error 10053")
+        || normalized.contains("os error 10054")
+        || normalized.contains("os error 10058")
 }
 
 fn derive_final_error(

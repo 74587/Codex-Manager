@@ -25,6 +25,7 @@ const GPT6_ASTRA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/mo
 const GPT_IMAGE_2_PRICE_SOURCE: &str =
     "https://developers.openai.com/api/docs/pricing#image-generation";
 const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
+const DELETED_BUILTIN_META_PREFIX: &str = "deleted_builtin_model:";
 const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &["gpt-image-2", GPT6_ASTRA_SLUG];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -568,6 +569,18 @@ fn insert_seed(
     seed: &BuiltinModelSeed,
     now: i64,
 ) -> Result<()> {
+    let deleted_meta_key = deleted_builtin_meta_key(&seed.slug);
+    let was_deleted = conn
+        .query_row(
+            "SELECT 1 FROM model_catalog_v2_meta WHERE key=?1",
+            [&deleted_meta_key],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if was_deleted {
+        return Ok(());
+    }
     let proposed_id = builtin_id(&seed.slug);
     conn.execute(
         "INSERT OR IGNORE INTO models (
@@ -717,6 +730,13 @@ fn seed_missing(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn deleted_builtin_meta_key(slug: &str) -> String {
+    format!(
+        "{DELETED_BUILTIN_META_PREFIX}{}",
+        slug.trim().to_ascii_lowercase()
+    )
 }
 
 fn migrate_legacy_catalog(conn: &Connection) -> Result<()> {
@@ -2243,23 +2263,20 @@ impl Storage {
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        match origin.as_deref() {
-            Some("builtin") => {
-                tx.execute(
-                    "UPDATE models
-                     SET enabled=0,visibility='hide',user_edited=1,updated_at=?2
-                     WHERE slug=?1 COLLATE NOCASE",
-                    params![slug.trim(), now_ts()],
-                )?;
-            }
-            Some("custom") => {
-                tx.execute(
-                    "DELETE FROM models WHERE slug=?1 COLLATE NOCASE",
-                    [slug.trim()],
-                )?;
-            }
-            _ => return Err(rusqlite::Error::QueryReturnedNoRows),
+        let Some(origin) = origin else {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        };
+        if origin == "builtin" {
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES(?1,?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![deleted_builtin_meta_key(slug), now_ts().to_string()],
+            )?;
         }
+        tx.execute(
+            "DELETE FROM models WHERE slug=?1 COLLATE NOCASE",
+            [slug.trim()],
+        )?;
         tx.commit()
     }
 
@@ -4089,18 +4106,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_delete_hides_and_disables_while_custom_delete_removes() {
+    fn builtin_and_custom_delete_remove_models_permanently() {
         let storage = storage();
         storage.delete_managed_model_v2("gpt-5.4").unwrap();
-        let deleted_builtin = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
-        assert!(!deleted_builtin.enabled);
-        assert_eq!(deleted_builtin.visibility, "hide");
-        assert!(deleted_builtin.user_edited);
-        assert!(!storage
-            .list_managed_models_v2(false)
-            .unwrap()
-            .iter()
-            .any(|model| model.slug == "gpt-5.4"));
+        assert!(storage.get_managed_model_v2("gpt-5.4").unwrap().is_none());
+        storage.seed_missing_builtin_models_v2().unwrap();
+        assert!(storage.get_managed_model_v2("gpt-5.4").unwrap().is_none());
         let mut custom = storage
             .get_managed_model_v2("gpt-5.4-mini")
             .unwrap()

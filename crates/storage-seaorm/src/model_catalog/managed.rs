@@ -460,18 +460,10 @@ impl ManagedModelsRepository {
     pub async fn delete(db: &DatabaseConnection, slug: &str) -> Result<(), DbErr> {
         let tx = db.begin().await?;
         crate::UsersRepository::lock(&tx, "model_groups").await?;
-        let mut record = ModelCatalogRepository::find_by_slug(&tx, slug)
+        let record = ModelCatalogRepository::find_by_slug(&tx, slug)
             .await?
             .ok_or_else(|| DbErr::Custom("model_not_found".into()))?;
-        if record.origin == "builtin" {
-            record.enabled = false;
-            record.visibility = "hide".into();
-            record.user_edited = true;
-            record.updated_at = now_ts();
-            ModelCatalogRepository::put(&tx, record).await?;
-        } else {
-            ModelCatalogRepository::delete(&tx, &record.id).await?;
-        }
+        ModelCatalogRepository::delete(&tx, &record.id).await?;
         tx.commit().await
     }
 }
@@ -663,15 +655,10 @@ mod tests {
         ManagedModelsRepository::delete(db, &builtin.slug)
             .await
             .unwrap();
-        let hidden = ManagedModelsRepository::get(db, &builtin.slug)
+        assert!(ManagedModelsRepository::get(db, &builtin.slug)
             .await
             .unwrap()
-            .unwrap();
-        assert!(!hidden.enabled);
-        assert_eq!(hidden.visibility, "hide");
-        ModelCatalogRepository::delete(db, &builtin.id)
-            .await
-            .unwrap();
+            .is_none());
     }
 
     #[tokio::test]

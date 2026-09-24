@@ -2,7 +2,7 @@ use chrono::TimeZone;
 use codexmanager_core::auth::DEFAULT_CLIENT_ID;
 use codexmanager_core::storage::{
     now_ts, AccountCodexProfileCandidate, AccountDirectAuthProfile, AccountTokenCandidate,
-    ApiKeyCodexProfileCandidate, Storage, Token,
+    AggregateApi, ApiKeyCodexProfileCandidate, Storage, Token,
 };
 use rusqlite::{backup::Backup, params, Connection};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,7 @@ const MIN_HISTORY_BACKUPS_PER_PROFILE: usize = 1;
 const AUTH_FILE: &str = "auth.json";
 const CONFIG_FILE: &str = "config.toml";
 const PROVIDER_ID: &str = "cm";
+const DIRECT_AGGREGATE_PROVIDER_ID: &str = "cm_aggregate";
 const DEFAULT_HISTORY_PROVIDER_ID: &str = "openai";
 const HISTORY_BACKUP_DIR: &str = ".codexmanager_history_backups";
 const STATE_DB_FILE: &str = "state_5.sqlite";
@@ -90,6 +91,7 @@ pub(crate) enum CodexProfileMode {
     Missing,
     Unmanaged,
     DirectAccount,
+    DirectAggregate,
     Gateway,
     ManagedUnknown,
 }
@@ -109,7 +111,9 @@ pub(crate) struct CodexProfileStatus {
     pub mode: CodexProfileMode,
     pub selected_account_id: Option<String>,
     pub selected_api_key_id: Option<String>,
+    pub selected_aggregate_api_id: Option<String>,
     pub gateway_base_url: Option<String>,
+    pub aggregate_api_base_url: Option<String>,
     pub supports_websockets: bool,
     pub provider_id: String,
     pub has_backup: bool,
@@ -158,9 +162,23 @@ pub(crate) struct CodexProfileApiKeyCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct CodexProfileAggregateApiCandidate {
+    pub id: String,
+    pub label: String,
+    pub supplier_name: Option<String>,
+    pub provider_type: String,
+    pub base_url: String,
+    pub sort: i64,
+    pub model_override: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CodexProfileCandidates {
     pub accounts: Vec<CodexProfileAccountCandidate>,
     pub api_keys: Vec<CodexProfileApiKeyCandidate>,
+    pub aggregate_apis: Vec<CodexProfileAggregateApiCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,7 +254,11 @@ struct ManagedState {
     mode: CodexProfileMode,
     account_id: Option<String>,
     api_key_id: Option<String>,
+    #[serde(default)]
+    aggregate_api_id: Option<String>,
     gateway_base_url: Option<String>,
+    #[serde(default)]
+    aggregate_api_base_url: Option<String>,
     #[serde(default)]
     supports_websockets: Option<bool>,
     provider_id: String,
@@ -302,7 +324,11 @@ struct MarkerFile {
     mode: CodexProfileMode,
     account_id: Option<String>,
     api_key_id: Option<String>,
+    #[serde(default)]
+    aggregate_api_id: Option<String>,
     gateway_base_url: Option<String>,
+    #[serde(default)]
+    aggregate_api_base_url: Option<String>,
     #[serde(default)]
     supports_websockets: Option<bool>,
     provider_id: String,
@@ -316,6 +342,34 @@ struct DetectedGatewayConfig {
     provider_id: String,
     base_url: String,
     supports_websockets: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DetectedDirectAggregateConfig {
+    base_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectAggregateApiKeyAuthParams {
+    location: String,
+    name: String,
+    #[serde(default)]
+    header_value_format: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum DirectAggregateAuth {
+    Bearer,
+    Header { name: String, format: String },
+}
+
+#[derive(Debug, Clone)]
+struct DirectAggregateConfig {
+    base_url: String,
+    provider_name: String,
+    auth: DirectAggregateAuth,
+    user_agent: Option<String>,
 }
 
 pub(crate) fn get_status(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
@@ -335,15 +389,15 @@ pub(crate) fn set_config(codex_home: Option<&str>) -> Result<CodexProfileStatus,
 
 pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
     let storage = open_storage()?;
-    let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
+    let account_storage = crate::account::remote_storage::AccountStorage::new(&storage);
     let tokens = usable_account_token_candidates_by_account(
-        storage
+        account_storage
             .list_usable_account_token_candidates()
             .map_err(|err| format!("list token candidates failed: {err}"))?,
     );
     let mut account_ids = tokens.keys().cloned().collect::<Vec<_>>();
     account_ids.sort();
-    let mut accounts = storage
+    let mut accounts = account_storage
         .list_active_account_codex_profile_candidates_for_ids(&account_ids)
         .map_err(|err| format!("list accounts failed: {err}"))?
         .into_iter()
@@ -356,7 +410,7 @@ pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    let mut api_keys = crate::apikey::remote::profile_candidates(&storage)
+    let mut api_keys = crate::apikey::remote::profile_candidates(&account_storage)
         .map_err(|err| format!("list api key profile candidates failed: {err}"))?
         .into_iter()
         .filter_map(api_key_candidate)
@@ -370,7 +424,184 @@ pub(crate) fn list_candidates() -> Result<CodexProfileCandidates, String> {
             .then_with(|| left.id.cmp(&right.id))
     });
 
-    Ok(CodexProfileCandidates { accounts, api_keys })
+    let mut aggregate_apis = account_storage
+        .list_aggregate_apis()
+        .map_err(|err| format!("list aggregate api candidates failed: {err}"))?
+        .into_iter()
+        .filter_map(direct_aggregate_candidate)
+        .collect::<Vec<_>>();
+    aggregate_apis.sort_by(|left, right| {
+        left.sort
+            .cmp(&right.sort)
+            .then_with(|| {
+                left.label
+                    .to_ascii_lowercase()
+                    .cmp(&right.label.to_ascii_lowercase())
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    Ok(CodexProfileCandidates {
+        accounts,
+        api_keys,
+        aggregate_apis,
+    })
+}
+
+fn direct_aggregate_candidate(api: AggregateApi) -> Option<CodexProfileAggregateApiCandidate> {
+    if !api.status.trim().eq_ignore_ascii_case("active") {
+        return None;
+    }
+    let config = direct_aggregate_config(&api).ok()?;
+    let label = api
+        .supplier_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(api.url.as_str())
+        .to_string();
+    Some(CodexProfileAggregateApiCandidate {
+        id: api.id,
+        label,
+        supplier_name: api.supplier_name,
+        provider_type: api.provider_type,
+        base_url: config.base_url,
+        sort: api.sort,
+        model_override: api.model_override,
+        user_agent: config.user_agent,
+    })
+}
+
+fn direct_aggregate_config(api: &AggregateApi) -> Result<DirectAggregateConfig, String> {
+    let provider_type = api
+        .provider_type
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    if !matches!(provider_type.as_str(), "codex" | "compatible") {
+        return Err("direct aggregate mode only supports Codex-compatible providers".to_string());
+    }
+    let auth_type = api.auth_type.trim().to_ascii_lowercase();
+    if auth_type != crate::aggregate_api::AGGREGATE_API_AUTH_APIKEY {
+        return Err("direct aggregate mode only supports API key authentication".to_string());
+    }
+    let auth = match api
+        .auth_params_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        None => DirectAggregateAuth::Bearer,
+        Some(raw) => {
+            let params: DirectAggregateApiKeyAuthParams = serde_json::from_str(raw)
+                .map_err(|_| "invalid aggregate api authParams".to_string())?;
+            if !params.location.trim().eq_ignore_ascii_case("header") {
+                return Err(
+                    "direct aggregate mode does not support query-string authentication"
+                        .to_string(),
+                );
+            }
+            let name = params.name.trim();
+            if name.is_empty() {
+                return Err("aggregate api auth header name is empty".to_string());
+            }
+            let format = params
+                .header_value_format
+                .as_deref()
+                .unwrap_or("bearer")
+                .trim()
+                .to_ascii_lowercase();
+            if !matches!(format.as_str(), "bearer" | "raw") {
+                return Err("unsupported aggregate api auth header format".to_string());
+            }
+            if name.eq_ignore_ascii_case("authorization") && format == "bearer" {
+                DirectAggregateAuth::Bearer
+            } else {
+                DirectAggregateAuth::Header {
+                    name: name.to_string(),
+                    format,
+                }
+            }
+        }
+    };
+    let provider_name = api
+        .supplier_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("CodexManager Aggregate · {value}"))
+        .unwrap_or_else(|| "CodexManager Aggregate".to_string());
+    Ok(DirectAggregateConfig {
+        base_url: direct_aggregate_responses_base_url(api)?,
+        provider_name,
+        auth,
+        user_agent: api
+            .user_agent
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    })
+}
+
+fn direct_aggregate_responses_base_url(api: &AggregateApi) -> Result<String, String> {
+    let effective_path = match api.action.as_deref() {
+        Some(action) if action.trim().is_empty() => String::new(),
+        Some(action) if action.trim().starts_with('/') => action.trim().to_string(),
+        Some(action) => format!("/{}", action.trim()),
+        None => "/v1/responses".to_string(),
+    };
+    let mut endpoint = build_direct_aggregate_url(api.url.as_str(), effective_path.as_str())?;
+    if endpoint.query().is_some() || endpoint.fragment().is_some() {
+        return Err(
+            "direct aggregate mode does not support endpoint query or fragment".to_string(),
+        );
+    }
+    let endpoint_path = endpoint.path().trim_end_matches('/');
+    let base_path = endpoint_path
+        .strip_suffix("/responses")
+        .ok_or_else(|| "aggregate api endpoint must resolve to /responses".to_string())?
+        .to_string();
+    endpoint.set_path(if base_path.is_empty() {
+        "/"
+    } else {
+        base_path.as_str()
+    });
+    Ok(endpoint.to_string().trim_end_matches('/').to_string())
+}
+
+fn build_direct_aggregate_url(base_url: &str, effective_path: &str) -> Result<url::Url, String> {
+    let mut url = url::Url::parse(base_url.trim())
+        .map_err(|error| format!("invalid aggregate api URL: {error}"))?;
+    let trimmed_path = effective_path.trim();
+    if trimmed_path.is_empty() {
+        return Ok(url);
+    }
+    let (path_part, query_part) = trimmed_path
+        .split_once('?')
+        .map_or((trimmed_path, None), |(path, query)| (path, Some(query)));
+    let raw_suffix = path_part.trim_start_matches('/');
+    let base_path = url.path().trim_end_matches('/').to_string();
+    let suffix = if (base_path == "/v1" || base_path.ends_with("/v1"))
+        && (raw_suffix == "v1" || raw_suffix.starts_with("v1/"))
+    {
+        raw_suffix
+            .strip_prefix("v1")
+            .unwrap_or(raw_suffix)
+            .trim_start_matches('/')
+    } else {
+        raw_suffix
+    };
+    let combined_path = if base_path.is_empty() || base_path == "/" {
+        format!("/{suffix}")
+    } else if suffix.is_empty() {
+        base_path
+    } else {
+        format!("{base_path}/{suffix}")
+    };
+    url.set_path(combined_path.as_str());
+    url.set_query(query_part.filter(|query| !query.trim().is_empty()));
+    Ok(url)
 }
 
 fn usable_account_token_candidates_by_account(
@@ -461,7 +692,9 @@ pub(crate) async fn apply_direct_account_async(
                 mode: CodexProfileMode::DirectAccount,
                 account_id: Some(account.id.clone()),
                 api_key_id: None,
+                aggregate_api_id: None,
                 gateway_base_url: None,
+                aggregate_api_base_url: None,
                 supports_websockets: None,
                 provider_id: DEFAULT_HISTORY_PROVIDER_ID.to_string(),
                 previous_model_catalog_json: None,
@@ -471,6 +704,115 @@ pub(crate) async fn apply_direct_account_async(
         )?;
         persist_codex_home(&profile_dir)?;
         status_for_profile_after_apply(&profile_dir, None, reload_after_switch)
+    })
+    .await
+}
+
+pub(crate) fn apply_direct_aggregate(
+    aggregate_api_id: Option<&str>,
+    codex_home: Option<&str>,
+    reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    crate::gateway::run_upstream_io(apply_direct_aggregate_async(
+        aggregate_api_id,
+        codex_home,
+        reload_after_switch,
+    ))?
+}
+
+pub(crate) async fn apply_direct_aggregate_async(
+    aggregate_api_id: Option<&str>,
+    codex_home: Option<&str>,
+    reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    let aggregate_api_id =
+        normalize_required(aggregate_api_id, "missing aggregateApiId")?.to_owned();
+    let codex_home = codex_home.map(str::to_owned);
+    let lease = profile_mutation_lease().await;
+    let (
+        profile_dir,
+        aggregate_api,
+        aggregate_config,
+        secret,
+        current_config,
+        previous_model_catalog_json,
+        paths,
+    ) = profile_commit(&lease, move || {
+        let profile_dir = resolve_profile_dir(codex_home.as_deref())?;
+        ensure_profile_dir_valid(&profile_dir)?;
+        let _ = ensure_managed_profile_migrated(&profile_dir);
+        let storage = open_storage()?;
+        let account_storage = crate::account::remote_storage::AccountStorage::new(&storage);
+        let aggregate_api = account_storage
+            .find_aggregate_api_with_secrets_by_id(&aggregate_api_id)
+            .map_err(|err| format!("read aggregate api failed: {err}"))?
+            .ok_or_else(|| "aggregate api not found".to_string())?;
+        if !aggregate_api
+            .api
+            .status
+            .trim()
+            .eq_ignore_ascii_case("active")
+        {
+            return Err("aggregate api is disabled".to_string());
+        }
+        let aggregate_config = direct_aggregate_config(&aggregate_api.api)?;
+        let secret = aggregate_api
+            .secret_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "aggregate api secret not found".to_string())?;
+        ensure_backup(&profile_dir)?;
+        let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+        let previous_model_catalog_json = previous_model_catalog_for_direct(&profile_dir);
+        let paths = managed_profile_paths(&profile_dir)?;
+        Ok((
+            profile_dir,
+            aggregate_api.api,
+            aggregate_config,
+            secret,
+            current_config,
+            previous_model_catalog_json,
+            paths,
+        ))
+    })
+    .await?;
+
+    profile_commit(&lease, move || {
+        let auth_json = build_gateway_auth_json(&secret)?;
+        let config_toml = patch_config_for_direct_aggregate(
+            current_config,
+            &aggregate_config,
+            &secret,
+            &paths.gateway_model_catalog_path,
+            previous_model_catalog_json.as_deref(),
+        )?;
+        write_profile_files(
+            &profile_dir,
+            &auth_json,
+            &config_toml,
+            ManagedState {
+                profile_dir: profile_key(&profile_dir),
+                mode: CodexProfileMode::DirectAggregate,
+                account_id: None,
+                api_key_id: None,
+                aggregate_api_id: Some(aggregate_api.id),
+                gateway_base_url: None,
+                aggregate_api_base_url: Some(aggregate_config.base_url),
+                supports_websockets: Some(false),
+                provider_id: DIRECT_AGGREGATE_PROVIDER_ID.to_string(),
+                previous_model_catalog_json: None,
+                managed_model_slugs: Vec::new(),
+                updated_at: now_ts(),
+            },
+        )?;
+        persist_codex_home(&profile_dir)?;
+        status_for_profile_after_apply(
+            &profile_dir,
+            Some(DIRECT_AGGREGATE_PROVIDER_ID),
+            reload_after_switch,
+        )
     })
     .await
 }
@@ -584,7 +926,9 @@ pub(crate) async fn apply_gateway_async(
                 mode: CodexProfileMode::Gateway,
                 account_id: None,
                 api_key_id: Some(gateway_auth.id),
+                aggregate_api_id: None,
                 gateway_base_url: Some(gateway_base_url),
+                aggregate_api_base_url: None,
                 supports_websockets: Some(supports_websockets),
                 provider_id: PROVIDER_ID.to_string(),
                 previous_model_catalog_json,
@@ -1114,6 +1458,10 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
         .ok()
         .flatten()
         .and_then(|content| detect_gateway_config(&content).ok().flatten());
+    let detected_direct_aggregate = read_optional(&config_path)
+        .ok()
+        .flatten()
+        .and_then(|content| detect_direct_aggregate_config(&content).ok().flatten());
     let managed_catalog_active = read_optional(&config_path)
         .ok()
         .flatten()
@@ -1127,7 +1475,9 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             mode: marker.mode,
             account_id: marker.account_id,
             api_key_id: marker.api_key_id,
+            aggregate_api_id: marker.aggregate_api_id,
             gateway_base_url: marker.gateway_base_url,
+            aggregate_api_base_url: marker.aggregate_api_base_url,
             supports_websockets: marker.supports_websockets,
             provider_id: marker.provider_id,
             previous_model_catalog_json: None,
@@ -1141,6 +1491,8 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             .is_some_and(|state| !matches!(&state.mode, CodexProfileMode::Gateway));
     let mode = if detected_gateway.is_some() {
         CodexProfileMode::Gateway
+    } else if detected_direct_aggregate.is_some() {
+        CodexProfileMode::DirectAggregate
     } else {
         state
             .as_ref()
@@ -1169,6 +1521,13 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
         } else {
             state.as_ref().and_then(|state| state.api_key_id.clone())
         },
+        selected_aggregate_api_id: if stale_non_gateway_state {
+            None
+        } else {
+            state
+                .as_ref()
+                .and_then(|state| state.aggregate_api_id.clone())
+        },
         gateway_base_url: detected_gateway
             .as_ref()
             .map(|gateway| gateway.base_url.clone())
@@ -1176,6 +1535,14 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
                 state
                     .as_ref()
                     .and_then(|state| state.gateway_base_url.clone())
+            }),
+        aggregate_api_base_url: detected_direct_aggregate
+            .as_ref()
+            .map(|aggregate| aggregate.base_url.clone())
+            .or_else(|| {
+                state
+                    .as_ref()
+                    .and_then(|state| state.aggregate_api_base_url.clone())
             }),
         supports_websockets: detected_gateway
             .as_ref()
@@ -1185,6 +1552,11 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
         provider_id: detected_gateway
             .as_ref()
             .map(|gateway| gateway.provider_id.clone())
+            .or_else(|| {
+                detected_direct_aggregate
+                    .as_ref()
+                    .map(|_| DIRECT_AGGREGATE_PROVIDER_ID.to_string())
+            })
             .or_else(|| state.as_ref().map(|state| state.provider_id.clone()))
             .unwrap_or_else(|| PROVIDER_ID.to_string()),
         has_backup: settings.backups.contains_key(&key),
@@ -1236,6 +1608,7 @@ fn target_history_provider_for_profile(profile_dir: &Path) -> Result<String, Str
     let status = status_for_profile(profile_dir)?;
     match status.mode {
         CodexProfileMode::Gateway => Ok(status.provider_id),
+        CodexProfileMode::DirectAggregate => Ok(status.provider_id),
         CodexProfileMode::DirectAccount => Ok(DEFAULT_HISTORY_PROVIDER_ID.to_string()),
         CodexProfileMode::Missing
         | CodexProfileMode::Unmanaged
@@ -2106,6 +2479,14 @@ fn detect_mode(
     {
         return CodexProfileMode::Gateway;
     }
+    if config.as_deref().is_some_and(|content| {
+        detect_direct_aggregate_config(content)
+            .ok()
+            .flatten()
+            .is_some()
+    }) {
+        return CodexProfileMode::DirectAggregate;
+    }
     if let Some(marker) = marker {
         return marker.mode.clone();
     }
@@ -2225,6 +2606,32 @@ fn detect_gateway_config(content: &str) -> Result<Option<DetectedGatewayConfig>,
         provider_id: provider_id.to_string(),
         base_url: normalize_gateway_base_url(Some(base_url)),
         supports_websockets,
+    }))
+}
+
+fn detect_direct_aggregate_config(
+    content: &str,
+) -> Result<Option<DetectedDirectAggregateConfig>, String> {
+    let doc = parse_config(content)?;
+    let provider_id = doc
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .map(str::trim);
+    if provider_id != Some(DIRECT_AGGREGATE_PROVIDER_ID) {
+        return Ok(None);
+    }
+    let base_url = doc
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(DIRECT_AGGREGATE_PROVIDER_ID))
+        .and_then(Item::as_table)
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "direct aggregate provider base_url is missing".to_string())?;
+    Ok(Some(DetectedDirectAggregateConfig {
+        base_url: base_url.to_string(),
     }))
 }
 
@@ -2420,6 +2827,54 @@ fn patch_config_for_direct(
     Ok(doc.to_string())
 }
 
+fn patch_config_for_direct_aggregate(
+    content: Option<String>,
+    aggregate: &DirectAggregateConfig,
+    secret: &str,
+    managed_catalog_path: &Path,
+    previous_model_catalog_json: Option<&str>,
+) -> Result<String, String> {
+    let restored = patch_config_to_restore_previous_catalog(
+        content,
+        managed_catalog_path,
+        previous_model_catalog_json,
+    )?;
+    let mut doc = parse_config(&restored)?;
+    doc.as_table_mut()
+        .insert("model_provider", toml_value(DIRECT_AGGREGATE_PROVIDER_ID));
+    if doc.as_table().get("model_providers").is_none() {
+        doc.as_table_mut()
+            .insert("model_providers", Item::Table(Table::new()));
+    }
+    let providers = doc
+        .as_table_mut()
+        .get_mut("model_providers")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| "config.toml model_providers is not a table".to_string())?;
+    let mut provider = Table::new();
+    provider.insert("name", toml_value(aggregate.provider_name.as_str()));
+    provider.insert("base_url", toml_value(aggregate.base_url.as_str()));
+    provider.insert("wire_api", toml_value("responses"));
+    provider.insert("supports_websockets", toml_value(false));
+    match &aggregate.auth {
+        DirectAggregateAuth::Bearer => set_provider_bearer_auth(&mut provider, secret)?,
+        DirectAggregateAuth::Header { name, format } => {
+            provider.insert("requires_openai_auth", toml_value(false));
+            let value = if format == "bearer" {
+                format!("Bearer {}", secret.trim())
+            } else {
+                secret.trim().to_string()
+            };
+            set_provider_http_header(&mut provider, name, value.as_str())?;
+        }
+    }
+    if let Some(user_agent) = aggregate.user_agent.as_deref() {
+        set_provider_http_header(&mut provider, "User-Agent", user_agent)?;
+    }
+    providers.insert(DIRECT_AGGREGATE_PROVIDER_ID, Item::Table(provider));
+    Ok(doc.to_string())
+}
+
 fn patch_config_for_gateway(
     content: Option<String>,
     base_url: &str,
@@ -2551,7 +3006,9 @@ fn managed_state_for_model_apply(
             mode: marker.mode,
             account_id: marker.account_id,
             api_key_id: marker.api_key_id,
+            aggregate_api_id: marker.aggregate_api_id,
             gateway_base_url: marker.gateway_base_url,
+            aggregate_api_base_url: marker.aggregate_api_base_url,
             supports_websockets: marker.supports_websockets,
             provider_id: marker.provider_id,
             previous_model_catalog_json: None,
@@ -2597,9 +3054,11 @@ fn managed_state_for_model_apply(
         mode,
         account_id: None,
         api_key_id: None,
+        aggregate_api_id: None,
         gateway_base_url: detected_gateway
             .as_ref()
             .map(|gateway| gateway.base_url.clone()),
+        aggregate_api_base_url: None,
         supports_websockets: detected_gateway
             .as_ref()
             .map(|gateway| gateway.supports_websockets),
@@ -2628,7 +3087,7 @@ fn set_provider_http_header(provider: &mut Table, name: &str, value: &str) -> Re
     }
     let headers = provider
         .get_mut("http_headers")
-        .ok_or_else(|| "config.toml model_providers.cm.http_headers is missing".to_string())?;
+        .ok_or_else(|| "config.toml model provider http_headers is missing".to_string())?;
     if let Some(table) = headers.as_table_mut() {
         table.insert(name, toml_value(value));
         return Ok(());
@@ -2933,7 +3392,9 @@ fn write_managed_marker(profile_dir: &Path, state: &ManagedState) -> Result<(), 
         mode: state.mode.clone(),
         account_id: state.account_id.clone(),
         api_key_id: state.api_key_id.clone(),
+        aggregate_api_id: state.aggregate_api_id.clone(),
         gateway_base_url: state.gateway_base_url.clone(),
+        aggregate_api_base_url: state.aggregate_api_base_url.clone(),
         supports_websockets: state.supports_websockets,
         provider_id: state.provider_id.clone(),
         managed_model_slugs: state.managed_model_slugs.clone(),

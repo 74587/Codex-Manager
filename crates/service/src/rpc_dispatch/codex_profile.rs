@@ -29,6 +29,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 super::bool_param(req, "reloadAfterSwitch").unwrap_or(false),
             ))
         }
+        "codexProfile/applyDirectAggregate" => {
+            super::value_or_error(crate::codex_profile::apply_direct_aggregate(
+                super::str_param(req, "aggregateApiId"),
+                super::str_param(req, "codexHome"),
+                super::bool_param(req, "reloadAfterSwitch").unwrap_or(false),
+            ))
+        }
         "codexProfile/applyGateway" => super::value_or_error(crate::codex_profile::apply_gateway(
             super::str_param(req, "apiKeyId"),
             super::str_param(req, "codexHome"),

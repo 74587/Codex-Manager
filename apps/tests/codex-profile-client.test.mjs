@@ -62,6 +62,66 @@ test("normalizeCodexProfileStatus reads the managed catalog state", () => {
   );
 });
 
+test("normalizeCodexProfileCandidates reads direct aggregate candidates", () => {
+  const candidates = client.normalizeCodexProfileCandidates({
+    aggregate_apis: [
+      {
+        id: "agg-1",
+        label: "Primary aggregate",
+        supplier_name: "Primary aggregate",
+        provider_type: "codex",
+        base_url: "https://aggregate.example/v1",
+        sort: -1,
+        model_override: "gpt-5.6-sol",
+        user_agent: "Aggregate/1.0",
+      },
+    ],
+  });
+
+  assert.deepEqual(candidates.aggregateApis, [
+    {
+      id: "agg-1",
+      label: "Primary aggregate",
+      supplierName: "Primary aggregate",
+      providerType: "codex",
+      baseUrl: "https://aggregate.example/v1",
+      sort: -1,
+      modelOverride: "gpt-5.6-sol",
+      userAgent: "Aggregate/1.0",
+    },
+  ]);
+});
+
+test("applyDirectAggregate writes the selected aggregate profile", async () => {
+  globalThis.__codexProfileInvokeCalls = [];
+  globalThis.__codexProfileInvokeResult = {
+    codex_home: "/srv/codex",
+    mode: "direct_aggregate",
+    selected_aggregate_api_id: "agg-1",
+    aggregate_api_base_url: "https://aggregate.example/v1",
+  };
+
+  const status = await client.codexProfileClient.applyDirectAggregate({
+    aggregateApiId: "agg-1",
+    codexHome: "/srv/codex",
+    reloadAfterSwitch: true,
+  });
+
+  assert.deepEqual(globalThis.__codexProfileInvokeCalls, [
+    {
+      command: "service_codex_profile_apply_direct_aggregate",
+      params: {
+        aggregateApiId: "agg-1",
+        codexHome: "/srv/codex",
+        reloadAfterSwitch: true,
+      },
+    },
+  ]);
+  assert.equal(status.mode, "direct_aggregate");
+  assert.equal(status.selectedAggregateApiId, "agg-1");
+  assert.equal(status.aggregateApiBaseUrl, "https://aggregate.example/v1");
+});
+
 test("applyModels uses the standalone command without gateway credentials", async () => {
   globalThis.__codexProfileInvokeCalls = [];
   globalThis.__codexProfileInvokeResult = {
