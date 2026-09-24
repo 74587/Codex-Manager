@@ -1,8 +1,41 @@
 use super::*;
 use codexmanager_core::storage::{
-    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2, StorageBackendKind,
+    ManagedModelPriceV2Update, ModelFastPolicyV2, ModelPriceTierV2, ModelPriceV2, ModelRouteV2,
+    StorageBackendKind,
 };
 use sea_orm::{DatabaseConnection, TransactionTrait};
+
+fn estimated_price_update(slug: &str, input: i64) -> ManagedModelPriceV2Update {
+    ManagedModelPriceV2Update {
+        slug: slug.to_string(),
+        price: ModelPriceV2 {
+            price_status: "estimated".into(),
+            price_source: Some("fixture".into()),
+            input_microusd_per_1m: Some(input),
+            cached_input_microusd_per_1m: Some(input),
+            cache_write_microusd_per_1m: None,
+            output_microusd_per_1m: Some(input * 2),
+        },
+        price_tiers: vec![ModelPriceTierV2 {
+            min_input_tokens: 0,
+            input_microusd_per_1m: input,
+            cached_input_microusd_per_1m: input,
+            cache_write_microusd_per_1m: None,
+            output_microusd_per_1m: input * 2,
+        }],
+    }
+}
+
+fn missing_price_update(slug: &str) -> ManagedModelPriceV2Update {
+    ManagedModelPriceV2Update {
+        slug: slug.to_string(),
+        price: ModelPriceV2 {
+            price_status: "missing".into(),
+            ..Default::default()
+        },
+        price_tiers: Vec::new(),
+    }
+}
 
 pub(crate) async fn exercise(db: &DatabaseConnection) {
     let stamp = std::time::SystemTime::now()
@@ -194,6 +227,142 @@ pub(crate) async fn exercise(db: &DatabaseConnection) {
         ModelPricesRepository::get(db, &id).await.unwrap(),
         Some(price.clone())
     );
+
+    let ignored =
+        ManagedModelsRepository::update_prices(db, &[estimated_price_update(&model.slug, 101)])
+            .await
+            .expect("preserve custom price");
+    assert!(ignored.is_empty());
+    assert_eq!(
+        ModelPricesRepository::get(db, &id).await.unwrap(),
+        Some(price.clone())
+    );
+    assert_eq!(
+        ModelPriceTiersRepository::list_for_model(db, &id)
+            .await
+            .unwrap(),
+        tiers
+    );
+
+    let mut estimated_seed = price.clone();
+    estimated_seed.price.price_status = "estimated".into();
+    estimated_seed.price.price_source = Some("old-fixture".into());
+    ModelPricesRepository::put(db, estimated_seed)
+        .await
+        .expect("prepare externally managed price");
+    let synced_update = estimated_price_update(&model.slug, 202);
+    assert_eq!(
+        ManagedModelsRepository::update_prices(db, std::slice::from_ref(&synced_update))
+            .await
+            .expect("sync price"),
+        vec![model.slug.clone()]
+    );
+    let synced = ManagedModelsRepository::get(db, &model.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(synced.price, synced_update.price);
+    assert_eq!(synced.price_tiers, synced_update.price_tiers);
+
+    let error = ManagedModelsRepository::update_prices(
+        db,
+        &[
+            estimated_price_update(&model.slug, 303),
+            estimated_price_update("missing-model", 404),
+        ],
+    )
+    .await
+    .expect_err("late missing model must roll back all price changes");
+    assert!(error.to_string().contains("model_not_found"));
+    let after_failed = ManagedModelsRepository::get(db, &model.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_failed.price, synced.price);
+    assert_eq!(after_failed.price_tiers, synced.price_tiers);
+
+    model.enabled = true;
+    model.updated_at = 30;
+    ModelCatalogRepository::put(db, model.clone())
+        .await
+        .expect("enable model for explicit billing group");
+    let group_id = format!("price-sync-group-{stamp}");
+    crate::ModelGroupsRepository::upsert(
+        db,
+        crate::ModelGroupRecord {
+            id: group_id.clone(),
+            name: "Price sync group".into(),
+            description: None,
+            status: "active".into(),
+            sort: 10,
+            is_default: false,
+            rate_multiplier_millis: 1_000,
+            created_at: 30,
+            updated_at: 30,
+        },
+    )
+    .await
+    .expect("create explicit billing group");
+    crate::ModelGroupsRepository::replace_models_v2(
+        db,
+        &group_id,
+        &[crate::ModelGroupModelRecord {
+            group_id: group_id.clone(),
+            platform_model_slug: model.slug.clone(),
+            enabled: true,
+            rate_multiplier_millis: None,
+            billing_model_slug: None,
+            note: None,
+            created_at: 30,
+            updated_at: 30,
+        }],
+    )
+    .await
+    .expect("assign explicit billing group");
+    let grouped = ManagedModelsRepository::get(db, &model.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(grouped.permission_group_ids.contains(&group_id));
+
+    let error = ManagedModelsRepository::update_prices(
+        db,
+        &[
+            missing_price_update(&model.slug),
+            estimated_price_update("missing-model", 505),
+        ],
+    )
+    .await
+    .expect_err("late failure must roll back price and group invalidation");
+    assert!(error.to_string().contains("model_not_found"));
+    let after_invalidation_failure = ManagedModelsRepository::get(db, &model.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_invalidation_failure.price, synced.price);
+    assert_eq!(after_invalidation_failure.price_tiers, synced.price_tiers);
+    assert!(after_invalidation_failure
+        .permission_group_ids
+        .contains(&group_id));
+
+    assert_eq!(
+        ManagedModelsRepository::update_prices(db, &[missing_price_update(&model.slug)])
+            .await
+            .expect("invalidate withdrawn external price"),
+        vec![model.slug.clone()]
+    );
+    let invalidated = ManagedModelsRepository::get(db, &model.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invalidated.price.price_status, "missing");
+    assert!(invalidated.price.price_source.is_none());
+    assert!(invalidated.price.input_microusd_per_1m.is_none());
+    assert!(invalidated.price.cached_input_microusd_per_1m.is_none());
+    assert!(invalidated.price.cache_write_microusd_per_1m.is_none());
+    assert!(invalidated.price.output_microusd_per_1m.is_none());
+    assert!(invalidated.price_tiers.is_empty());
+    assert!(!invalidated.permission_group_ids.contains(&group_id));
 
     let rollback_id = format!("{id}-rollback");
     model.id = rollback_id.clone();

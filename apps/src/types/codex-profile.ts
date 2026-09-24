@@ -24,6 +24,7 @@ export interface CodexProfileStatus {
   hasBackup: boolean;
   lastAppliedAt: number | null;
   profileWritable: boolean;
+  managedCatalogActive: boolean;
   error: string | null;
   warnings: string[];
   historyRepair: CodexProfileHistoryRepairSummary | null;

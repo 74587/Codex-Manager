@@ -49,9 +49,10 @@ pub use model_billing_v2::{
     ModelPriceTierV2,
 };
 pub use model_catalog_v2::{
-    validate_managed_model_v2, ManagedModelBatchStateV2Update, ManagedModelRouteEnsureResultV2,
-    ManagedModelRouteEnsureV2, ManagedModelStateV2Update, ManagedModelV2, ManagedModelV2Upsert,
-    ModelCatalogV2Stats, ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
+    validate_managed_model_price_v2, validate_managed_model_v2, ManagedModelBatchStateV2Update,
+    ManagedModelPriceV2Update, ManagedModelRouteEnsureResultV2, ManagedModelRouteEnsureV2,
+    ManagedModelStateV2Update, ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats,
+    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
 pub use reset_credit_operations::{

@@ -7,6 +7,8 @@ pub(crate) fn is_async_method(method: &str) -> bool {
             | "account/login/complete"
             | "codexProfile/applyDirectAccount"
             | "codexProfile/applyGateway"
+            | "codexProfile/applyModels"
+            | "codexProfile/restore"
             | "codexSkills/repositoryAdd"
             | "codexSkills/repositoryDelete"
             | "codexSkills/repositoryRefresh"
@@ -33,6 +35,7 @@ pub(crate) fn is_async_method(method: &str) -> bool {
             | "account/proxy/test"
             | "system/proxy/test"
             | "account/usage/refresh"
+            | "apikey/managedModelPriceSyncV2"
             | "gateway/codexLatestVersion/get"
     )
 }
@@ -55,6 +58,10 @@ pub(crate) async fn try_handle_network_request_async(
     if req.method == "gateway/codexLatestVersion/get" {
         let result =
             super::value_or_error(crate::app_settings::fetch_codex_latest_version_async().await);
+        return Some(JsonRpcMessage::Response(super::response(req, result)));
+    }
+    if req.method == "apikey/managedModelPriceSyncV2" {
+        let result = super::value_or_error(crate::models_v2::sync_prices().await);
         return Some(JsonRpcMessage::Response(super::response(req, result)));
     }
     if let Some(message) = super::auth_async::try_handle_auth_request_async(req, actor).await {
@@ -146,9 +153,11 @@ mod tests {
             "codexSkills/registryInstall",
             "codexProfile/applyDirectAccount",
             "codexProfile/applyGateway",
+            "codexProfile/applyModels",
             "system/proxy/test",
             "account/usage/resetCredits",
             "account/usage/resetCredit/consume",
+            "apikey/managedModelPriceSyncV2",
         ] {
             let req = JsonRpcRequest {
                 id: 42.into(),

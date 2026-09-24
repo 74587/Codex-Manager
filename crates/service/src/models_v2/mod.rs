@@ -1,6 +1,7 @@
 pub(crate) mod fast_policy;
 mod import;
 pub(crate) mod instructions;
+mod pricing_sync;
 mod seaorm;
 
 use codexmanager_core::rpc::types::{
@@ -17,6 +18,7 @@ pub(crate) use import::{
     commit_import, preview_import, ManagedModelImportCommitV2Params,
     ManagedModelImportPreviewV2Params, ManagedModelImportPreviewV2Result,
 };
+pub(crate) use pricing_sync::sync_prices;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,72 +66,157 @@ pub(crate) fn get(slug: &str) -> Result<ManagedModelV2, String> {
 }
 
 pub(crate) fn upsert(input: ManagedModelV2Upsert) -> Result<ManagedModelV2, String> {
+    let changes = selection_changes_for_upserts(std::slice::from_ref(&input));
     if crate::storage_helpers::seaorm_enabled() {
-        return seaorm::upsert_many(vec![input])?
+        let model = seaorm::upsert_many(vec![input])?
             .pop()
-            .ok_or_else(|| "model_not_found".into());
+            .ok_or_else(|| "model_not_found".to_string())?;
+        sync_active_gateway_catalog_for_current_backend_best_effort(changes);
+        return Ok(model);
     }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let model = storage
         .upsert_managed_model_v2(&input)
         .map_err(|err| format!("save managed model V2 failed: {err}"))?;
-    sync_active_gateway_catalog_best_effort(&storage);
+    sync_active_gateway_catalog_after_model_changes_best_effort(&storage, changes);
     Ok(model)
 }
 
 pub(crate) fn update_state(input: ManagedModelStateV2Update) -> Result<ManagedModelV2, String> {
+    let changes = selection_changes_for_state(&input);
     if crate::storage_helpers::seaorm_enabled() {
-        return seaorm::update_states(ManagedModelBatchStateV2Update {
+        let model = seaorm::update_states(ManagedModelBatchStateV2Update {
             slugs: vec![input.slug],
             enabled: input.enabled,
             visibility: input.visibility,
         })?
         .pop()
-        .ok_or_else(|| "model_not_found".into());
+        .ok_or_else(|| "model_not_found".to_string())?;
+        sync_active_gateway_catalog_for_current_backend_best_effort(changes);
+        return Ok(model);
     }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let model = storage
         .update_managed_model_state_v2(&input)
         .map_err(|err| format!("update managed model V2 state failed: {err}"))?;
-    sync_active_gateway_catalog_best_effort(&storage);
+    sync_active_gateway_catalog_after_model_changes_best_effort(&storage, changes);
     Ok(model)
 }
 
 pub(crate) fn batch_update_state(
     input: ManagedModelBatchStateV2Update,
 ) -> Result<Vec<ManagedModelV2>, String> {
+    let changes = selection_changes_for_batch_state(&input);
     if crate::storage_helpers::seaorm_enabled() {
-        return seaorm::update_states(input);
+        let models = seaorm::update_states(input)?;
+        sync_active_gateway_catalog_for_current_backend_best_effort(changes);
+        return Ok(models);
     }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let models = storage
         .update_managed_models_state_v2(&input)
         .map_err(|err| format!("batch update managed model V2 state failed: {err}"))?;
-    sync_active_gateway_catalog_best_effort(&storage);
+    sync_active_gateway_catalog_after_model_changes_best_effort(&storage, changes);
     Ok(models)
 }
 
 pub(crate) fn delete(slug: &str) -> Result<(), String> {
+    let changes = vec![crate::codex_profile::ManagedModelSelectionChange::remove(
+        slug,
+    )];
     if crate::storage_helpers::seaorm_enabled() {
-        return seaorm::delete(slug);
+        seaorm::delete(slug)?;
+        sync_active_gateway_catalog_for_current_backend_best_effort(changes);
+        return Ok(());
     }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     storage
         .delete_managed_model_v2(slug)
         .map_err(|err| format!("delete managed model V2 failed: {err}"))?;
-    sync_active_gateway_catalog_best_effort(&storage);
+    sync_active_gateway_catalog_after_model_changes_best_effort(&storage, changes);
     Ok(())
 }
 
 pub(super) fn sync_active_gateway_catalog_best_effort(
     storage: &codexmanager_core::storage::Storage,
 ) {
-    if let Err(err) = crate::codex_profile::sync_active_gateway_profile_from_storage(storage) {
+    sync_active_gateway_catalog_after_model_changes_best_effort(storage, Vec::new());
+}
+
+pub(super) fn sync_active_gateway_catalog_after_model_changes_best_effort(
+    storage: &codexmanager_core::storage::Storage,
+    changes: Vec<crate::codex_profile::ManagedModelSelectionChange>,
+) {
+    if let Err(err) =
+        crate::codex_profile::sync_active_gateway_profile_after_model_changes(storage, changes)
+    {
         log::warn!("event=sync_active_gateway_profile_failed error={err}");
+    }
+}
+
+pub(super) fn sync_active_gateway_catalog_for_current_backend_best_effort(
+    changes: Vec<crate::codex_profile::ManagedModelSelectionChange>,
+) {
+    let Some(storage) = crate::storage_helpers::open_storage() else {
+        log::warn!("event=sync_active_gateway_profile_failed error=storage unavailable");
+        return;
+    };
+    sync_active_gateway_catalog_after_model_changes_best_effort(&storage, changes);
+}
+
+pub(super) fn selection_changes_for_upserts(
+    inputs: &[ManagedModelV2Upsert],
+) -> Vec<crate::codex_profile::ManagedModelSelectionChange> {
+    inputs
+        .iter()
+        .filter_map(|input| {
+            let previous_slug = input
+                .previous_slug
+                .as_deref()
+                .unwrap_or(input.model.slug.as_str());
+            if input.model.visibility.eq_ignore_ascii_case("hide") {
+                return Some(crate::codex_profile::ManagedModelSelectionChange::remove(
+                    previous_slug,
+                ));
+            }
+            (!previous_slug.eq_ignore_ascii_case(&input.model.slug)).then(|| {
+                crate::codex_profile::ManagedModelSelectionChange::rename(
+                    previous_slug,
+                    input.model.slug.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn selection_changes_for_state(
+    input: &ManagedModelStateV2Update,
+) -> Vec<crate::codex_profile::ManagedModelSelectionChange> {
+    if input.visibility.eq_ignore_ascii_case("hide") {
+        vec![crate::codex_profile::ManagedModelSelectionChange::remove(
+            input.slug.clone(),
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+fn selection_changes_for_batch_state(
+    input: &ManagedModelBatchStateV2Update,
+) -> Vec<crate::codex_profile::ManagedModelSelectionChange> {
+    if input.visibility.eq_ignore_ascii_case("hide") {
+        input
+            .slugs
+            .iter()
+            .cloned()
+            .map(crate::codex_profile::ManagedModelSelectionChange::remove)
+            .collect()
+    } else {
+        Vec::new()
     }
 }
 

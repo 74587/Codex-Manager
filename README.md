@@ -195,7 +195,7 @@ PatewayAI 专注于官方高质量模型 API 中继，完整支持 Claude、Code
 | 配置端口、代理、数据库、Web 密码、环境变量 | [环境变量与运行配置](docs/zh-CN/report/环境变量与运行配置说明.md) |
 | 排查账号不命中、导入失败、挑战拦截、请求异常 | [FAQ 与账号命中规则](docs/zh-CN/report/FAQ与账号命中规则.md) |
 | 排查后台任务账号跳过、禁用与停用原因 | [后台任务账号跳过说明](docs/zh-CN/report/后台任务账号跳过说明.md) |
-| 管理模型、价格、路由、instructions policy 与本地缓存导出 | [模型目录 V2 管理与计费说明](docs/zh-CN/report/模型目录V2管理与计费说明.md) |
+| 管理模型、价格、路由、instructions policy 与 Codex 模型目录应用 | [模型目录 V2 管理与计费说明](docs/zh-CN/report/模型目录V2管理与计费说明.md) |
 | 插件中心最小接入、快速对接 | [插件中心最小接入说明](docs/zh-CN/report/插件中心最小接入说明.md) |
 | 对接插件中心、查看接口清单、市场模式与 Rhai 接口 | [插件中心对接与接口清单](docs/zh-CN/report/插件中心对接与接口清单.md) |
 | 系统全部可对接内部接口 | [系统内部接口总表](docs/zh-CN/report/系统内部接口总表.md) |
@@ -208,7 +208,7 @@ PatewayAI 专注于官方高质量模型 API 中继，完整支持 Claude、Code
 - [额度重置自动唤醒](docs/zh-CN/额度重置自动唤醒.md)：默认在已耗尽的 5 小时额度到达重置时间后发送简短预热消息，支持按账号或批量开启、关闭，减少等待下一轮额度刷新的时间。
 - 授权登录：支持 `chatgpt.com` 浏览器授权与 Device Code 登录；浏览器授权仍可手动粘贴回调地址完成解析
 - 平台 Key：随机生成或自定义固定 Key、禁用、删除、模型绑定、推理等级、服务等级（跟随请求 / Standard / Fast / Ultrafast / Flex）；可绑定自定义账号分组，并与账号计划筛选取交集后仅在授权池内轮转
-- 模型管理：模型目录 V2 是唯一运行时真相源；支持 builtin/custom、整数三价与长上下文阶梯价、账号池/聚合 API route、instructions policy、本地 JSON preview/commit，以及桌面/Web 主动导出 Codex 缓存
+- 模型管理：模型目录 V2 是唯一运行时真相源；支持 builtin/custom、整数三价与长上下文阶梯价、账号池/聚合 API route、instructions policy、本地 JSON preview/commit，以及勾选模型后应用到 Codex 的 `model_catalog_json`
 - 聚合 API：管理第三方最小转发上游，支持创建、编辑、余额和基于已配置 V2 route 的连通性测试；不会自动发现供应商模型，管理员可主动拉取并选择性关联到模型目录 V2，不维护旧供应商模型池
 - 插件中心：路由为 `/plugins/`，支持内置精选、企业私有、自定义源三种市场模式，并提供插件清单、任务、日志与 Rhai 对接接口
 - Skills 与插件：`/skills/` 按“Skills 安装 / Codex 插件安装”分栏。Skills 安装提供内置及自定义 GitHub 技能仓库、仓库刷新与单 Skill 安装、skills.sh 搜索安装、ZIP / 目录导入和已安装管理；Codex 插件安装保留原生 Marketplace 的完整插件安装流程，`.system` 内置 Skill 始终只读

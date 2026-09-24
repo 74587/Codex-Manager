@@ -244,6 +244,84 @@ fn aggregate_request_user_agent_override_replaces_conflicting_auth_header() {
 }
 
 #[test]
+fn aggregate_stream_request_forces_identity_encoding_for_sse_observation() {
+    let request: tiny_http::Request = tiny_http::TestRequest::new()
+        .with_header(
+            tiny_http::Header::from_bytes("Accept", "application/json")
+                .expect("incoming accept header"),
+        )
+        .with_header(
+            tiny_http::Header::from_bytes("Accept-Encoding", "gzip, br, zstd")
+                .expect("incoming accept-encoding header"),
+        )
+        .into();
+    let client = reqwest::Client::new();
+    let built = build_aggregate_api_request(
+        &client,
+        &request.into(),
+        &reqwest::Method::POST,
+        reqwest::Url::parse("https://example.com/v1/responses").expect("url"),
+        &Bytes::from_static(br#"{"model":"gpt-test","stream":true}"#),
+        "aggregate-secret",
+        &AggregateApiAuthConfig::ApiKeyDefaultBearer,
+        &std::collections::HashSet::new(),
+        "Aggregate-Test/1.0",
+        None,
+        true,
+    )
+    .expect("build aggregate stream request");
+
+    assert_eq!(
+        built
+            .headers()
+            .get("accept")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    assert_eq!(
+        built
+            .headers()
+            .get("accept-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("identity")
+    );
+    assert_eq!(built.headers().get_all("accept-encoding").iter().count(), 1);
+}
+
+#[test]
+fn aggregate_non_stream_request_preserves_client_accept_encoding() {
+    let request: tiny_http::Request = tiny_http::TestRequest::new()
+        .with_header(
+            tiny_http::Header::from_bytes("Accept-Encoding", "gzip, br")
+                .expect("incoming accept-encoding header"),
+        )
+        .into();
+    let client = reqwest::Client::new();
+    let built = build_aggregate_api_request(
+        &client,
+        &request.into(),
+        &reqwest::Method::POST,
+        reqwest::Url::parse("https://example.com/v1/responses").expect("url"),
+        &Bytes::from_static(br#"{"model":"gpt-test","stream":false}"#),
+        "aggregate-secret",
+        &AggregateApiAuthConfig::ApiKeyDefaultBearer,
+        &std::collections::HashSet::new(),
+        "Aggregate-Test/1.0",
+        None,
+        false,
+    )
+    .expect("build aggregate non-stream request");
+
+    assert_eq!(
+        built
+            .headers()
+            .get("accept-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip, br")
+    );
+}
+
+#[test]
 fn rewrite_body_model_override_replaces_json_model() {
     let body = Bytes::from_static(br#"{"model":"claude-sonnet","messages":[]}"#);
 

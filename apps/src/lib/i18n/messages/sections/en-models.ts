@@ -6,8 +6,32 @@ export const EN_MODELS_MESSAGES: MessageCatalog = {
   模型与路由: "Models and routing",
   "配置 CodexManager 本地网关目录中的模型、价格、路由和指令策略。":
     "Configure models, prices, routes, and instruction policies in the local CodexManager gateway catalog.",
-  刷新本地目录: "Refresh local catalog",
-  "本地网关模型目录已刷新": "Local gateway model catalog refreshed",
+  应用模型: "Apply models",
+  "正在应用...": "Applying...",
+  同步价格: "Sync prices",
+  "正在同步价格...": "Syncing prices...",
+  "价格同步完成：更新 {updated}，未变化 {unchanged}，保留自定义 {preservedCustom}，未匹配 {unmatched}，歧义 {ambiguous}":
+    "Price sync complete: {updated} updated, {unchanged} unchanged, {preservedCustom} custom preserved, {unmatched} unmatched, {ambiguous} ambiguous",
+  "价格同步部分完成（失败来源：{sources}）：更新 {updated}，未变化 {unchanged}，保留自定义 {preservedCustom}，未匹配 {unmatched}，歧义 {ambiguous}":
+    "Price sync partially completed (failed sources: {sources}): {updated} updated, {unchanged} unchanged, {preservedCustom} custom preserved, {unmatched} unmatched, {ambiguous} ambiguous",
+  同步价格失败: "Failed to sync prices",
+  "价格已同步，但重新读取模型失败":
+    "Prices were synced, but the model catalog could not be reloaded",
+  "模型已写入 Codex 配置，并已请求重载 {count} 个 Codex 后台进程":
+    "Models were written to the Codex configuration, and {count} Codex background processes were asked to reload",
+  "模型已写入 Codex 配置；未发现运行中的 Codex 后台进程，请重新打开 Codex 查看最新模型":
+    "Models were written to the Codex configuration. No running Codex background process was found; reopen Codex to see the latest models.",
+  "模型已写入 Codex 配置；重新打开 Codex 后会显示最新模型":
+    "Models were written to the Codex configuration. Reopen Codex to see the latest models.",
+  "已将 {count} 个所选模型写入 Codex 配置；关闭并重新打开 Codex 后会显示最新模型":
+    "The {count} selected models were written to the Codex configuration. Close and reopen Codex to see the updated model list.",
+  "模型已写入 Codex 配置，但 Codex 后台重载有警告":
+    "Models were written to the Codex configuration, but the Codex background reload reported a warning",
+  "模型已应用，但重新读取状态失败":
+    "Models were applied, but their status could not be reloaded",
+  应用模型失败: "Failed to apply models",
+  "请先勾选一个或多个模型，再应用到 Codex 或使用批量操作。":
+    "Select one or more models before applying them to Codex or using batch actions.",
   "导入到本地网关目录": "Import into local gateway catalog",
   "新增网关自定义模型": "Add custom gateway model",
   "当前 Codex 模型来源": "Current Codex model source",
@@ -15,10 +39,10 @@ export const EN_MODELS_MESSAGES: MessageCatalog = {
   当前不生效: "Not active for current Codex",
   本地目录: "Local catalog",
   "本地目录是否影响当前 Codex": "Does the local catalog affect current Codex?",
-  "当前平台密钥使用本地网关目录；下方模型、路由和可见性设置会影响当前 Codex。":
-    "The current platform key uses the local gateway catalog. The model, route, and visibility settings below affect the current Codex session.",
-  "当前 Codex 跟随 OpenAI 官方目录；下方设置仅供使用本地目录的平台密钥，不会改变当前模型列表。":
-    "The current Codex session follows the official OpenAI catalog. The settings below apply only to platform keys that use the local catalog and will not change the current model list.",
+  "当前 Codex 已应用本地模型目录；下方模型、路由和可见性设置会影响当前 Codex。":
+    "The local model catalog is applied to the current Codex. The models, routes, and visibility settings below affect the current Codex.",
+  "当前 Codex 尚未应用本地模型目录；点击应用模型后，模型列表将使用下方目录。":
+    "The local model catalog is not yet applied to the current Codex. Apply models to use the catalog below for its model list.",
   "尚未确认当前 Codex 的目录来源；请先在 Codex 接入方式页面检查配置。":
     "The current Codex catalog source is not confirmed. Check the configuration on the Codex Connection page.",
   本地网关模型目录: "Local gateway model catalog",

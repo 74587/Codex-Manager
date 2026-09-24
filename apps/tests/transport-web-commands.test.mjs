@@ -233,6 +233,9 @@ test("createWebCommandMap 为 Codex profile 管理提供 Web RPC 映射", () => 
   assert.deepEqual(commandMap.service_codex_profile_apply_gateway, {
     rpcMethod: "codexProfile/applyGateway",
   });
+  assert.deepEqual(commandMap.service_codex_profile_apply_models, {
+    rpcMethod: "codexProfile/applyModels",
+  });
   assert.deepEqual(commandMap.service_codex_profile_restore, {
     rpcMethod: "codexProfile/restore",
   });
@@ -404,6 +407,9 @@ test("createWebCommandMap 为模型目录 V2 原子命令提供 Web RPC 映射",
   });
   assert.deepEqual(commandMap.service_managed_model_delete_v2, {
     rpcMethod: "apikey/managedModelDeleteV2",
+  });
+  assert.deepEqual(commandMap.service_managed_model_price_sync_v2, {
+    rpcMethod: "apikey/managedModelPriceSyncV2",
   });
 
   const upsert = commandMap.service_managed_model_upsert_v2;

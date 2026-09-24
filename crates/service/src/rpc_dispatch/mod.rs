@@ -108,6 +108,21 @@ pub(super) fn string_param(req: &JsonRpcRequest, key: &str) -> Option<String> {
     str_param(req, key).map(|v| v.to_string())
 }
 
+pub(super) fn string_array_param(req: &JsonRpcRequest, key: &str) -> Vec<String> {
+    req.params
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 函数 `i64_param`
 ///
 /// 作者: gaohongshun
@@ -256,7 +271,10 @@ fn member_method_allowed(method: &str) -> bool {
 fn admin_only_method(method: &str) -> bool {
     matches!(
         method,
-        "account/usage/resetCredits" | "account/usage/resetCredit/consume"
+        "codexProfile/applyModels"
+            | "account/usage/resetCredits"
+            | "account/usage/resetCredit/consume"
+            | "apikey/managedModelPriceSyncV2"
     )
 }
 

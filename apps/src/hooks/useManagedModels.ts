@@ -8,9 +8,15 @@ import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import {
   buildManagedModelListQueryKey,
+  buildManagedModelSelectorQueryKey,
   buildModelGroupListQueryKey,
   normalizeQueryServiceAddress,
 } from "@/lib/api/account-query-keys";
+import {
+  CODEX_PROFILE_CANDIDATES_QUERY_KEY,
+  CODEX_PROFILE_STATUS_QUERY_KEY,
+  codexProfileClient,
+} from "@/lib/api/codex-profile-client";
 import { managedModelsV2Client } from "@/lib/api/managed-models-v2";
 import { getAppErrorMessage } from "@/lib/api/transport";
 import { useI18n } from "@/lib/i18n/provider";
@@ -52,6 +58,11 @@ type UpdateManagedModelStateInput = {
   visibility: ModelVisibilityV2;
 };
 
+type ApplyManagedModelsInput = {
+  codexHome?: string | null;
+  modelSlugs: string[];
+};
+
 function routeAssignmentKey(sourceKind: string, sourceId: string): string {
   return `${sourceKind}\u0000${sourceId}`;
 }
@@ -77,6 +88,8 @@ export function useManagedModels() {
   const serviceStatus = useAppStore((state) => state.serviceStatus);
   const serviceAddr = normalizeQueryServiceAddress(serviceStatus.addr);
   const managedModelsQueryKey = buildManagedModelListQueryKey(serviceAddr, true);
+  const managedModelSelectorQueryKey =
+    buildManagedModelSelectorQueryKey(serviceAddr);
   const modelGroupListQueryKey = buildModelGroupListQueryKey(serviceAddr);
   const startupSnapshotQueryKey = ["startup-snapshot", serviceAddr] as const;
   const { canAccessManagementRpc } = useRuntimeCapabilities();
@@ -101,6 +114,7 @@ export function useManagedModels() {
 
   const invalidateConsumers = async () => {
     await Promise.all([
+      queryClient.invalidateQueries({ queryKey: managedModelSelectorQueryKey }),
       queryClient.invalidateQueries({ queryKey: modelGroupListQueryKey }),
       queryClient.invalidateQueries({ queryKey: startupSnapshotQueryKey }),
     ]);
@@ -499,20 +513,103 @@ export function useManagedModels() {
     },
   });
 
+  const priceSyncMutation = useMutation({
+    mutationFn: () => managedModelsV2Client.syncPrices(serviceAddr),
+    onSuccess: async (result) => {
+      let refreshError: unknown = null;
+      try {
+        await Promise.all([reloadCatalog(), invalidateConsumers()]);
+      } catch (error) {
+        refreshError = error;
+      }
+      const failedSources = result.sources
+        .filter((source) => source.status === "error")
+        .map((source) => source.name)
+        .join(", ");
+      const values = {
+        updated: result.updated,
+        unchanged: result.unchanged,
+        preservedCustom: result.preservedCustom,
+        unmatched: result.unmatched,
+        ambiguous: result.ambiguous,
+      };
+      if (failedSources) {
+        toast.warning(
+          t(
+            "价格同步部分完成（失败来源：{sources}）：更新 {updated}，未变化 {unchanged}，保留自定义 {preservedCustom}，未匹配 {unmatched}，歧义 {ambiguous}",
+            { ...values, sources: failedSources },
+          ),
+        );
+      } else {
+        toast.success(
+          t(
+            "价格同步完成：更新 {updated}，未变化 {unchanged}，保留自定义 {preservedCustom}，未匹配 {unmatched}，歧义 {ambiguous}",
+            values,
+          ),
+        );
+      }
+      if (refreshError) {
+        toast.warning(
+          `${t("价格已同步，但重新读取模型失败")}: ${getAppErrorMessage(refreshError)}`,
+        );
+      }
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("同步价格失败")}: ${getAppErrorMessage(error)}`);
+    },
+  });
+
+  const applyModelsMutation = useMutation({
+    mutationFn: (input: ApplyManagedModelsInput) =>
+      codexProfileClient.applyModels({
+        ...input,
+      }),
+    onSuccess: async (nextStatus, input) => {
+      queryClient.setQueryData(CODEX_PROFILE_STATUS_QUERY_KEY, nextStatus);
+      toast.success(
+        t(
+          "已将 {count} 个所选模型写入 Codex 配置；关闭并重新打开 Codex 后会显示最新模型",
+          { count: input.modelSlugs.length },
+        ),
+      );
+
+      try {
+        await Promise.all([
+          reloadCatalog(),
+          queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_STATUS_QUERY_KEY }),
+          queryClient.invalidateQueries({ queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY }),
+          invalidateConsumers(),
+        ]);
+      } catch (error) {
+        toast.warning(
+          `${t("模型已应用，但重新读取状态失败")}: ${getAppErrorMessage(error)}`,
+        );
+      }
+    },
+    onError: (error: unknown) => {
+      toast.error(`${t("应用模型失败")}: ${getAppErrorMessage(error)}`);
+    },
+  });
+
   return {
     models: query.data?.items || [],
     catalog: query.data || { items: [], stats: EMPTY_STATS },
     stats: query.data?.stats || EMPTY_STATS,
     isLoading: isServiceReady && (!isQueryEnabled || query.isLoading),
     isServiceReady,
-    refreshLocal: async () => {
-      if (!ensureServiceReady("读取模型")) return null;
+    applyModels: async (input: ApplyManagedModelsInput) => {
+      if (!ensureServiceReady("应用模型")) return null;
       try {
-        const result = await reloadCatalog();
-        toast.success(t("本地网关模型目录已刷新"));
-        return result;
-      } catch (error) {
-        toast.error(`${t("读取模型失败")}: ${getAppErrorMessage(error)}`);
+        return await applyModelsMutation.mutateAsync(input);
+      } catch {
+        return null;
+      }
+    },
+    syncPrices: async () => {
+      if (!ensureServiceReady("同步价格")) return null;
+      try {
+        return await priceSyncMutation.mutateAsync();
+      } catch {
         return null;
       }
     },
@@ -565,6 +662,8 @@ export function useManagedModels() {
       return commitImportMutation.mutateAsync(input);
     },
     isRefreshing: query.isRefetching,
+    isApplyingModels: applyModelsMutation.isPending,
+    isSyncingPrices: priceSyncMutation.isPending,
     isSaving: saveMutation.isPending,
     isUpdatingModelState:
       modelStateMutation.isPending || batchModelStateMutation.isPending,

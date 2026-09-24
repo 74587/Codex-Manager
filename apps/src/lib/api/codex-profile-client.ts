@@ -109,6 +109,9 @@ export function normalizeCodexProfileStatus(payload: unknown): CodexProfileStatu
     hasBackup: asBoolean(source.hasBackup ?? source.has_backup),
     lastAppliedAt: toNullableNumber(source.lastAppliedAt ?? source.last_applied_at),
     profileWritable: asBoolean(source.profileWritable ?? source.profile_writable),
+    managedCatalogActive: asBoolean(
+      source.managedCatalogActive ?? source.managed_catalog_active,
+    ),
     error: toNullableString(source.error),
     warnings: asStringArray(source.warnings),
     historyRepair: normalizeCodexProfileHistoryRepair(
@@ -314,6 +317,20 @@ export const codexProfileClient = {
         baseUrl: params.baseUrl || null,
         supportsWebsockets: params.supportsWebsockets,
         reloadAfterSwitch: params.reloadAfterSwitch,
+      }),
+    );
+    return normalizeCodexProfileStatus(result);
+  },
+  async applyModels(params: {
+    codexHome?: string | null;
+    modelSlugs: string[];
+  }): Promise<CodexProfileStatus> {
+    const result = await invoke<unknown>(
+      "service_codex_profile_apply_models",
+      withAddr({
+        codexHome: params.codexHome || null,
+        modelSlugs: params.modelSlugs,
+        reloadAfterSwitch: false,
       }),
     );
     return normalizeCodexProfileStatus(result);

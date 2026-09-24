@@ -524,7 +524,11 @@ fn should_skip_forward_header_for_aggregate_request(
     if should_skip_forward_header_with_overrides(name, injected) {
         return true;
     }
-    is_stream && normalize_header_key(name) == "accept"
+    is_stream
+        && matches!(
+            normalize_header_key(name).as_str(),
+            "accept" | "accept-encoding"
+        )
 }
 
 /// 函数 `respond_error`
@@ -868,6 +872,14 @@ fn build_aggregate_api_request(
         builder = builder.header(
             HeaderName::from_static("accept"),
             HeaderValue::from_static("text/event-stream"),
+        );
+        // The gateway inspects SSE frames for terminal state and usage while it
+        // streams the same bytes to the client. Compressed upstream bytes would
+        // be valid for the client but unreadable to that observer, causing a
+        // successful request to be logged as a UTF-8/502 failure.
+        builder = builder.header(
+            HeaderName::from_static("accept-encoding"),
+            HeaderValue::from_static("identity"),
         );
     }
 

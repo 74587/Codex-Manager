@@ -1,5 +1,5 @@
 use super::*;
-use codexmanager_core::storage::{Account, Storage};
+use codexmanager_core::storage::{Account, ApiKey, ManagedModelV2Upsert, Storage};
 use rusqlite::Connection;
 
 #[tokio::test(flavor = "current_thread")]
@@ -55,6 +55,28 @@ fn cleanup_profile(dir: &Path) {
     let _ = fs::remove_dir_all(dir);
 }
 
+fn insert_custom_model_clone(storage: &Storage, source_slug: &str, slug: &str) {
+    let mut model = storage
+        .get_managed_model_v2(source_slug)
+        .expect("read source model")
+        .expect("seeded source model");
+    model.id.clear();
+    model.slug = slug.to_string();
+    model.display_name = format!("Custom {slug}");
+    model.origin = "custom".to_string();
+    model.builtin_revision = None;
+    model.permission_group_ids.clear();
+    for route in &mut model.routes {
+        route.id.clear();
+    }
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: None,
+            model,
+        })
+        .expect("insert custom model clone");
+}
+
 fn provider_http_header<'a>(provider: &'a Table, name: &str) -> Option<&'a str> {
     let headers = provider.get("http_headers")?;
     if let Some(table) = headers.as_table() {
@@ -78,6 +100,12 @@ impl EnvGuard {
         std::env::set_var(key, value);
         Self { key, original }
     }
+
+    fn remove(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
 }
 
 impl Drop for EnvGuard {
@@ -99,6 +127,25 @@ fn set_test_db(dir: &Path) -> EnvGuard {
     EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref())
 }
 
+#[test]
+fn managed_model_selection_changes_rename_remove_and_deduplicate() {
+    let mut slugs = vec![
+        "old-model".to_string(),
+        "keep-model".to_string(),
+        "NEW-MODEL".to_string(),
+    ];
+    let changed = apply_managed_model_selection_changes(
+        &mut slugs,
+        &[
+            ManagedModelSelectionChange::rename("old-model", "new-model"),
+            ManagedModelSelectionChange::remove("keep-model"),
+        ],
+    );
+
+    assert!(changed);
+    assert_eq!(slugs, vec!["new-model"]);
+}
+
 fn test_account(id: &str, status: &str) -> Account {
     Account {
         id: id.to_string(),
@@ -113,7 +160,6 @@ fn test_account(id: &str, status: &str) -> Account {
         updated_at: now_ts(),
     }
 }
-
 fn test_token(account_id: &str, access_token: &str, refresh_token: &str) -> Token {
     Token {
         account_id: account_id.to_string(),
@@ -261,6 +307,689 @@ name = "Other"
     )
     .expect("disable gateway websocket");
     assert!(without_websocket.contains("supports_websockets = false"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reload() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("reapply-gateway-models");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let managed_root = dir.join("managed");
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        managed_root.to_string_lossy().as_ref(),
+    );
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open test storage");
+    storage.init().expect("init test storage");
+    let api_key = ApiKey {
+        id: "key-reapply-models".to_string(),
+        name: Some("Reapply models".to_string()),
+        model_slug: None,
+        reasoning_effort: None,
+        service_tier: None,
+        rotation_strategy: crate::apikey_profile::ROTATION_HYBRID.to_string(),
+        aggregate_api_id: None,
+        account_plan_filter: None,
+        aggregate_api_url: None,
+        client_type: crate::apikey_profile::CLIENT_CODEX.to_string(),
+        protocol_type: crate::apikey_profile::PROTOCOL_OPENAI_COMPAT.to_string(),
+        auth_scheme: crate::apikey_profile::AUTH_BEARER.to_string(),
+        upstream_base_url: None,
+        static_headers_json: None,
+        key_hash: "reapply-models-hash".to_string(),
+        status: "active".to_string(),
+        created_at: now_ts(),
+        last_used_at: None,
+    };
+    storage
+        .insert_api_key(&api_key)
+        .expect("insert platform key");
+    storage
+        .upsert_api_key_secret(&api_key.id, "cm-reapply-secret")
+        .expect("insert platform key secret");
+
+    let codex_home = dir.to_string_lossy().to_string();
+    let first = apply_gateway_async(
+        Some(&api_key.id),
+        Some(&codex_home),
+        Some("http://127.0.0.1:48760"),
+        Some(false),
+        false,
+    )
+    .await
+    .expect("apply gateway profile");
+    assert_eq!(
+        first.selected_api_key_id.as_deref(),
+        Some(api_key.id.as_str())
+    );
+    let applied_models = apply_models_async(Some(&codex_home), vec!["gpt-5.4".to_string()], true)
+        .await
+        .expect("apply selected gateway model");
+    assert!(applied_models
+        .runtime_reload
+        .as_ref()
+        .is_some_and(|reload| !reload.requested));
+    assert_eq!(
+        load_state()
+            .expect("state after applying models")
+            .managed_model_slugs,
+        vec!["gpt-5.4"]
+    );
+
+    let paths = managed_profile_paths(&dir).expect("managed profile paths");
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4")
+        .expect("read managed model")
+        .expect("seeded managed model");
+    model.display_name = "GPT Reapplied".to_string();
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(model.slug.clone()),
+            model,
+        })
+        .expect("update managed model");
+    fs::write(&paths.gateway_model_catalog_path, "stale catalog")
+        .expect("replace catalog with stale content");
+
+    let reapplied = apply_gateway_async(
+        Some(&api_key.id),
+        Some(&codex_home),
+        first.gateway_base_url.as_deref(),
+        Some(first.supports_websockets),
+        true,
+    )
+    .await
+    .expect("reapply gateway profile");
+
+    let catalog: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&paths.gateway_model_catalog_path).expect("read refreshed catalog"),
+    )
+    .expect("parse refreshed catalog");
+    assert!(catalog["models"].as_array().is_some_and(|models| {
+        models
+            .iter()
+            .any(|model| model["slug"] == "gpt-5.4" && model["display_name"] == "GPT Reapplied")
+    }));
+
+    let config =
+        parse_config(&fs::read_to_string(dir.join(CONFIG_FILE)).expect("read refreshed config"))
+            .expect("parse refreshed config");
+    assert_eq!(
+        config.get("model_catalog_json").and_then(Item::as_str),
+        Some(paths.gateway_model_catalog_path.to_string_lossy().as_ref())
+    );
+    assert!(reapplied
+        .runtime_reload
+        .as_ref()
+        .is_some_and(|reload| reload.requested));
+    assert!(load_state()
+        .expect("state after reapplying gateway")
+        .managed_model_slugs
+        .is_empty());
+    assert!(read_marker(&paths.marker_path)
+        .expect("marker after reapplying gateway")
+        .managed_model_slugs
+        .is_empty());
+
+    let stale_gateway_slug = "stale-custom-gateway";
+    insert_custom_model_clone(&storage, "gpt-5.6-sol", stale_gateway_slug);
+    apply_models_async(
+        Some(&codex_home),
+        vec![stale_gateway_slug.to_string()],
+        false,
+    )
+    .await
+    .expect("apply model before stale selection recovery");
+    storage
+        .delete_managed_model_v2(stale_gateway_slug)
+        .expect("delete selected model without updating profile state");
+    assert!(sync_active_gateway_profile_from_storage_async(&storage)
+        .await
+        .expect("reconcile stale gateway model selection"));
+    assert!(load_state()
+        .expect("state after stale gateway selection recovery")
+        .managed_model_slugs
+        .is_empty());
+    assert!(read_marker(&paths.marker_path)
+        .expect("marker after stale gateway selection recovery")
+        .managed_model_slugs
+        .is_empty());
+    let recovered_catalog: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&paths.gateway_model_catalog_path)
+            .expect("read fallback gateway catalog"),
+    )
+    .expect("parse fallback gateway catalog");
+    assert!(recovered_catalog["models"]
+        .as_array()
+        .is_some_and(|models| !models.is_empty()
+            && models
+                .iter()
+                .all(|model| model["slug"] != stale_gateway_slug)));
+    let recovered_config =
+        parse_config(&fs::read_to_string(dir.join(CONFIG_FILE)).expect("read recovered config"))
+            .expect("parse recovered config");
+    assert_eq!(
+        recovered_config
+            .get("model_catalog_json")
+            .and_then(Item::as_str),
+        Some(paths.gateway_model_catalog_path.to_string_lossy().as_ref())
+    );
+
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn applying_models_without_an_api_key_preserves_existing_profile_configuration() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("apply-models-without-api-key");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let managed_root = dir.join("managed");
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        managed_root.to_string_lossy().as_ref(),
+    );
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open test storage");
+    storage.init().expect("init test storage");
+    let mut selected_model = storage
+        .get_managed_model_v2("gpt-5.4")
+        .expect("read selected model")
+        .expect("seeded selected model");
+    selected_model.enabled = false;
+    selected_model.supported_in_api = false;
+    selected_model.visibility = "hide".to_string();
+    selected_model
+        .capabilities
+        .as_object_mut()
+        .expect("selected model capabilities")
+        .insert(
+            "supports_text_generation".to_string(),
+            serde_json::json!(false),
+        );
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(selected_model.slug.clone()),
+            model: selected_model,
+        })
+        .expect("make selected model hidden and unavailable");
+    fs::create_dir_all(&dir).expect("create profile");
+    let auth_json = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"external-secret"}
+"#;
+    fs::write(dir.join(AUTH_FILE), auth_json).expect("write existing auth");
+    let config_toml = r#"model_provider = "external"
+base_url = "https://external.example.test/v1"
+custom_setting = true
+
+[model_providers.external]
+name = "External Provider"
+base_url = "https://external.example.test/v1"
+wire_api = "responses"
+experimental_bearer_token = "external-provider-secret"
+"#;
+    fs::write(dir.join(CONFIG_FILE), "model_provider = [invalid").expect("write malformed config");
+    assert!(list_candidates()
+        .expect("list candidates")
+        .api_keys
+        .is_empty());
+
+    let paths = managed_profile_paths(&dir).expect("managed profile paths");
+    fs::create_dir_all(
+        paths
+            .gateway_model_catalog_path
+            .parent()
+            .expect("catalog parent"),
+    )
+    .expect("create catalog parent");
+    fs::write(&paths.gateway_model_catalog_path, "stale catalog").expect("write stale catalog");
+    let error = apply_models_async(
+        Some(dir.to_string_lossy().as_ref()),
+        vec![" GPT-5.4 ".to_string(), "gpt-5.4".to_string()],
+        false,
+    )
+    .await
+    .expect_err("malformed config must reject model apply");
+    assert!(error.contains("parse config.toml failed"), "{error}");
+    assert_eq!(
+        fs::read_to_string(&paths.gateway_model_catalog_path).expect("read unchanged catalog"),
+        "stale catalog"
+    );
+
+    fs::write(dir.join(CONFIG_FILE), config_toml).expect("write existing config");
+
+    let status = apply_models_async(
+        Some(dir.to_string_lossy().as_ref()),
+        vec![" GPT-5.4 ".to_string(), "gpt-5.4".to_string()],
+        true,
+    )
+    .await
+    .expect("apply managed model catalog");
+
+    assert!(status.managed_catalog_active);
+    assert_eq!(status.selected_api_key_id, None);
+    assert!(status
+        .runtime_reload
+        .as_ref()
+        .is_some_and(|reload| !reload.requested));
+    assert_eq!(
+        fs::read_to_string(dir.join(AUTH_FILE)).expect("read preserved auth"),
+        auth_json
+    );
+
+    let written_config = fs::read_to_string(dir.join(CONFIG_FILE)).expect("read updated config");
+    let config = parse_config(&written_config).expect("parse updated config");
+    assert_eq!(
+        config.get("model_provider").and_then(Item::as_str),
+        Some("external")
+    );
+    assert_eq!(
+        config.get("base_url").and_then(Item::as_str),
+        Some("https://external.example.test/v1")
+    );
+    assert_eq!(
+        config.get("custom_setting").and_then(Item::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        config.get("model_catalog_json").and_then(Item::as_str),
+        Some(paths.gateway_model_catalog_path.to_string_lossy().as_ref())
+    );
+    let external_provider = config
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get("external"))
+        .and_then(Item::as_table)
+        .expect("external provider");
+    assert_eq!(
+        external_provider.get("base_url").and_then(Item::as_str),
+        Some("https://external.example.test/v1")
+    );
+    assert_eq!(
+        external_provider
+            .get("experimental_bearer_token")
+            .and_then(Item::as_str),
+        Some("external-provider-secret")
+    );
+    assert!(config
+        .get("model_providers")
+        .and_then(Item::as_table)
+        .is_some_and(|providers| !providers.contains_key(PROVIDER_ID)));
+
+    let catalog_content =
+        fs::read_to_string(&paths.gateway_model_catalog_path).expect("read managed catalog");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&catalog_content).expect("parse managed catalog");
+    let models = catalog["models"].as_array().expect("models array");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["slug"], "gpt-5.4");
+    assert_eq!(models[0]["visibility"], "list");
+    assert_eq!(models[0]["supported_in_api"], true);
+    assert_eq!(
+        storage
+            .get_managed_model_v2("gpt-5.4")
+            .expect("read persisted selected model")
+            .expect("persisted selected model")
+            .supported_in_api,
+        false,
+        "Codex picker compatibility must not change the stored gateway/API flag"
+    );
+    let state = load_state().expect("managed state");
+    assert_eq!(state.managed_model_slugs, vec!["gpt-5.4"]);
+    let marker = read_marker(&paths.marker_path).expect("managed marker");
+    assert_eq!(marker.managed_model_slugs, vec!["gpt-5.4"]);
+
+    let mut refreshed_model = storage
+        .get_managed_model_v2("gpt-5.4")
+        .expect("read selected model for refresh")
+        .expect("selected model for refresh");
+    refreshed_model.display_name = "Selected model refreshed".to_string();
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(refreshed_model.slug.clone()),
+            model: refreshed_model,
+        })
+        .expect("refresh selected model");
+    let mut unselected_model = storage
+        .get_managed_model_v2("gpt-5.6-sol")
+        .expect("read unselected model")
+        .expect("seeded unselected model");
+    unselected_model.display_name = "Unselected model refreshed".to_string();
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(unselected_model.slug.clone()),
+            model: unselected_model,
+        })
+        .expect("refresh unselected model");
+    assert!(sync_active_gateway_profile_from_storage_async(&storage)
+        .await
+        .expect("sync selected managed models"));
+    let refreshed_catalog: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&paths.gateway_model_catalog_path).expect("read refreshed catalog"),
+    )
+    .expect("parse refreshed catalog");
+    let refreshed_models = refreshed_catalog["models"]
+        .as_array()
+        .expect("refreshed models array");
+    assert_eq!(refreshed_models.len(), 1);
+    assert_eq!(refreshed_models[0]["slug"], "gpt-5.4");
+    assert_eq!(
+        refreshed_models[0]["display_name"],
+        "Selected model refreshed"
+    );
+    fs::remove_file(&paths.gateway_model_catalog_path).expect("remove managed catalog");
+    assert!(
+        !status_for_profile(&dir)
+            .expect("status without catalog")
+            .managed_catalog_active
+    );
+    fs::write(&paths.gateway_model_catalog_path, "{}").expect("write catalog without models");
+    assert!(
+        !status_for_profile(&dir)
+            .expect("status with invalid catalog")
+            .managed_catalog_active
+    );
+    fs::write(&paths.gateway_model_catalog_path, catalog_content).expect("restore managed catalog");
+    assert!(
+        status_for_profile(&dir)
+            .expect("status with valid catalog")
+            .managed_catalog_active
+    );
+    assert!(list_candidates()
+        .expect("list candidates")
+        .api_keys
+        .is_empty());
+
+    assert!(sync_active_gateway_profile_from_storage_with_changes_async(
+        &storage,
+        vec![ManagedModelSelectionChange::remove("gpt-5.4")],
+    )
+    .await
+    .expect("remove the last applied model"));
+    assert!(load_state()
+        .expect("state after removing applied model")
+        .managed_model_slugs
+        .is_empty());
+    assert!(read_marker(&paths.marker_path)
+        .expect("marker after removing applied model")
+        .managed_model_slugs
+        .is_empty());
+    let restored_config =
+        parse_config(&fs::read_to_string(dir.join(CONFIG_FILE)).expect("read restored config"))
+            .expect("parse restored config");
+    assert!(restored_config.get("model_catalog_json").is_none());
+    assert!(
+        !status_for_profile(&dir)
+            .expect("status after removing applied model")
+            .managed_catalog_active
+    );
+
+    let stale_external_slug = "stale-custom-external";
+    insert_custom_model_clone(&storage, "gpt-5.4", stale_external_slug);
+    apply_models_async(
+        Some(dir.to_string_lossy().as_ref()),
+        vec![stale_external_slug.to_string()],
+        false,
+    )
+    .await
+    .expect("reapply model before stale selection recovery");
+    storage
+        .delete_managed_model_v2(stale_external_slug)
+        .expect("delete selected model without updating profile state");
+    assert!(sync_active_gateway_profile_from_storage_async(&storage)
+        .await
+        .expect("reconcile stale external model selection"));
+    assert!(load_state()
+        .expect("state after stale external selection recovery")
+        .managed_model_slugs
+        .is_empty());
+    assert!(read_marker(&paths.marker_path)
+        .expect("marker after stale external selection recovery")
+        .managed_model_slugs
+        .is_empty());
+    let recovered_config =
+        parse_config(&fs::read_to_string(dir.join(CONFIG_FILE)).expect("read recovered config"))
+            .expect("parse recovered config");
+    assert!(recovered_config.get("model_catalog_json").is_none());
+    assert!(
+        !status_for_profile(&dir)
+            .expect("status after stale external selection recovery")
+            .managed_catalog_active
+    );
+
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn empty_or_unknown_model_selection_does_not_mutate_profile() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("reject-invalid-model-selection");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let managed_root = dir.join("managed");
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        managed_root.to_string_lossy().as_ref(),
+    );
+    fs::create_dir_all(&dir).expect("create profile");
+    let auth_json = "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"keep-me\"}\n";
+    let config_toml = "model_provider = \"external\"\ncustom_setting = true\n";
+    fs::write(dir.join(AUTH_FILE), auth_json).expect("write auth");
+    fs::write(dir.join(CONFIG_FILE), config_toml).expect("write config");
+    let paths = managed_profile_paths(&dir).expect("managed profile paths");
+    fs::create_dir_all(
+        paths
+            .gateway_model_catalog_path
+            .parent()
+            .expect("catalog parent"),
+    )
+    .expect("create catalog parent");
+    fs::write(&paths.gateway_model_catalog_path, "existing catalog")
+        .expect("write existing catalog");
+
+    let empty_error = apply_models_async(Some(dir.to_string_lossy().as_ref()), Vec::new(), true)
+        .await
+        .expect_err("empty selection must fail");
+    assert!(empty_error.contains("no models selected"), "{empty_error}");
+    let unknown_error = apply_models_async(
+        Some(dir.to_string_lossy().as_ref()),
+        vec!["does-not-exist".to_string()],
+        true,
+    )
+    .await
+    .expect_err("unknown selection must fail");
+    assert!(
+        unknown_error.contains("unknown managed model slug(s): does-not-exist"),
+        "{unknown_error}"
+    );
+
+    assert_eq!(
+        fs::read_to_string(dir.join(AUTH_FILE)).expect("read unchanged auth"),
+        auth_json
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join(CONFIG_FILE)).expect("read unchanged config"),
+        config_toml
+    );
+    assert_eq!(
+        fs::read_to_string(&paths.gateway_model_catalog_path).expect("read unchanged catalog"),
+        "existing catalog"
+    );
+    assert!(!paths.marker_path.exists());
+    assert!(load_state().is_none());
+    assert!(!load_backups().contains_key(&profile_key(&dir)));
+
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn apply_models_commit_failures_restore_all_files_and_settings() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("apply-models-rollback");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let managed_root = dir.join("managed");
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        managed_root.to_string_lossy().as_ref(),
+    );
+    fs::create_dir_all(&dir).expect("create profile");
+
+    let config_toml = r#"model_provider = "external"
+model_catalog_json = "C:/previous-models.json"
+custom_setting = true
+"#;
+    fs::write(dir.join(CONFIG_FILE), config_toml).expect("write baseline config");
+    let paths = managed_profile_paths(&dir).expect("managed profile paths");
+    fs::create_dir_all(&paths.root).expect("create managed profile root");
+    let catalog_content = r#"{"models":[{"slug":"previous-model"}]}"#;
+    fs::write(&paths.gateway_model_catalog_path, catalog_content).expect("write baseline catalog");
+
+    let baseline_state = ManagedState {
+        profile_dir: profile_key(&dir),
+        mode: CodexProfileMode::Unmanaged,
+        account_id: None,
+        api_key_id: None,
+        gateway_base_url: None,
+        supports_websockets: None,
+        provider_id: "external".to_string(),
+        previous_model_catalog_json: Some("C:/previous-models.json".to_string()),
+        managed_model_slugs: vec!["previous-model".to_string()],
+        updated_at: 123,
+    };
+    write_managed_state(&dir, &baseline_state).expect("write baseline managed state");
+    let marker_content = fs::read_to_string(&paths.marker_path).expect("read baseline marker");
+    fs::write(&paths.legacy_marker_path, &marker_content).expect("write baseline legacy marker");
+
+    let baseline_backups = HashMap::from([(
+        "C:/previous/.codex".to_string(),
+        BackupEntry {
+            profile_dir: "C:/previous/.codex".to_string(),
+            auth_json: None,
+            config_toml: Some("model_provider = \"previous\"\n".to_string()),
+            created_at: 10,
+            updated_at: 20,
+        },
+    )]);
+    save_backups(&baseline_backups).expect("write baseline backups");
+    crate::app_settings::save_persisted_app_setting(
+        APP_SETTING_CODEX_HOME_KEY,
+        Some("C:/previous/.codex"),
+    )
+    .expect("write baseline codex home");
+
+    let baseline_state_setting =
+        crate::app_settings::get_persisted_app_setting(APP_SETTING_STATE_KEY);
+    let baseline_backups_setting =
+        crate::app_settings::get_persisted_app_setting(APP_SETTING_BACKUPS_KEY);
+    let baseline_codex_home_setting =
+        crate::app_settings::get_persisted_app_setting(APP_SETTING_CODEX_HOME_KEY);
+
+    for stage in [
+        "after_backup",
+        "after_catalog",
+        "after_config",
+        "after_marker",
+        "after_state",
+        "after_codex_home",
+    ] {
+        let failure_guard = EnvGuard::set("CODEXMANAGER_TEST_APPLY_MODELS_FAIL_AFTER", stage);
+        let error = apply_models_async(
+            Some(dir.to_string_lossy().as_ref()),
+            vec!["gpt-5.4".to_string()],
+            false,
+        )
+        .await
+        .expect_err("injected commit failure must reject model apply");
+        drop(failure_guard);
+        assert!(error.contains(stage), "{error}");
+
+        assert_eq!(
+            fs::read_to_string(dir.join(CONFIG_FILE)).expect("read restored config"),
+            config_toml,
+            "config changed after failure at {stage}"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.gateway_model_catalog_path).expect("read restored catalog"),
+            catalog_content,
+            "catalog changed after failure at {stage}"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.marker_path).expect("read restored marker"),
+            marker_content,
+            "marker changed after failure at {stage}"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.legacy_marker_path).expect("read restored legacy marker"),
+            marker_content,
+            "legacy marker changed after failure at {stage}"
+        );
+        assert_eq!(
+            crate::app_settings::get_persisted_app_setting(APP_SETTING_STATE_KEY),
+            baseline_state_setting,
+            "state setting changed after failure at {stage}"
+        );
+        assert_eq!(
+            crate::app_settings::get_persisted_app_setting(APP_SETTING_BACKUPS_KEY),
+            baseline_backups_setting,
+            "backup setting changed after failure at {stage}"
+        );
+        assert_eq!(
+            crate::app_settings::get_persisted_app_setting(APP_SETTING_CODEX_HOME_KEY),
+            baseline_codex_home_setting,
+            "Codex home setting changed after failure at {stage}"
+        );
+        assert!(!load_backups().contains_key(&profile_key(&dir)));
+    }
+
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_apply_models_failure_removes_new_managed_state() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("apply-models-first-write-rollback");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let managed_root = dir.join("managed");
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        managed_root.to_string_lossy().as_ref(),
+    );
+    fs::create_dir_all(&dir).expect("create profile");
+    let config_toml = "model_provider = \"external\"\n";
+    fs::write(dir.join(CONFIG_FILE), config_toml).expect("write baseline config");
+    let paths = managed_profile_paths(&dir).expect("managed profile paths");
+    assert!(!paths.root.exists());
+
+    let failure_guard = EnvGuard::set("CODEXMANAGER_TEST_APPLY_MODELS_FAIL_AFTER", "after_state");
+    let error = apply_models_async(
+        Some(dir.to_string_lossy().as_ref()),
+        vec!["gpt-5.4".to_string()],
+        false,
+    )
+    .await
+    .expect_err("injected first apply failure must reject model apply");
+    drop(failure_guard);
+    assert!(error.contains("after_state"), "{error}");
+
+    assert_eq!(
+        fs::read_to_string(dir.join(CONFIG_FILE)).expect("read restored config"),
+        config_toml
+    );
+    assert!(!paths.gateway_model_catalog_path.exists());
+    assert!(!paths.marker_path.exists());
+    assert!(!paths.legacy_marker_path.exists());
+    assert!(!paths.root.exists());
+    assert!(load_state().is_none());
+    assert!(!load_backups().contains_key(&profile_key(&dir)));
+    assert!(crate::app_settings::get_persisted_app_setting(APP_SETTING_CODEX_HOME_KEY).is_none());
+
+    cleanup_profile(&dir);
 }
 
 #[test]
@@ -542,7 +1271,6 @@ fn list_candidates_uses_active_account_projection_and_usable_tokens() {
     assert_eq!(force_account.status, "force_enabled");
     cleanup_profile(&dir);
 }
-
 #[test]
 fn restore_optional_file_removes_files_that_were_missing() {
     let dir = temp_profile("restore-missing");
@@ -553,6 +1281,53 @@ fn restore_optional_file_removes_files_that_were_missing() {
     restore_optional_file(&path, None).expect("restore missing");
 
     assert!(!path.exists());
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn restore_waits_for_the_profile_mutation_lease() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("restore-profile-lock");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    fs::create_dir_all(&dir).expect("create profile");
+    fs::write(dir.join(CONFIG_FILE), "model_provider = \"current\"\n")
+        .expect("write current config");
+    let key = profile_key(&dir);
+    let now = now_ts();
+    save_backups(&HashMap::from([(
+        key.clone(),
+        BackupEntry {
+            profile_dir: key,
+            auth_json: None,
+            config_toml: Some("model_provider = \"restored\"\n".to_string()),
+            created_at: now,
+            updated_at: now,
+        },
+    )]))
+    .expect("save profile backup");
+
+    let lease = profile_mutation_lease().await;
+    let codex_home = dir.to_string_lossy().to_string();
+    let restore_task = tokio::spawn(async move { restore_async(Some(codex_home.as_str())).await });
+    tokio::task::yield_now().await;
+    assert!(!restore_task.is_finished());
+    assert_eq!(
+        fs::read_to_string(dir.join(CONFIG_FILE)).expect("read current config"),
+        "model_provider = \"current\"\n"
+    );
+
+    drop(lease);
+    tokio::time::timeout(Duration::from_secs(2), restore_task)
+        .await
+        .expect("restore acquires released profile lock")
+        .expect("restore task")
+        .expect("restore profile");
+    assert_eq!(
+        fs::read_to_string(dir.join(CONFIG_FILE)).expect("read restored config"),
+        "model_provider = \"restored\"\n"
+    );
     cleanup_profile(&dir);
 }
 
@@ -775,6 +1550,7 @@ experimental_bearer_token = "cm-key"
         gateway_base_url: None,
         supports_websockets: None,
         provider_id: PROVIDER_ID.to_string(),
+        managed_model_slugs: Vec::new(),
         updated_at: now_ts(),
     };
 
@@ -845,6 +1621,7 @@ fn write_profile_files_uses_internal_marker() {
         supports_websockets: Some(false),
         provider_id: PROVIDER_ID.to_string(),
         previous_model_catalog_json: None,
+        managed_model_slugs: Vec::new(),
         updated_at: now_ts(),
     };
 
@@ -863,6 +1640,33 @@ fn write_profile_files_uses_internal_marker() {
 }
 
 #[test]
+fn legacy_profile_state_defaults_selected_models_to_empty() {
+    let state: ManagedState = serde_json::from_value(serde_json::json!({
+        "profileDir": "C:/Users/example/.codex",
+        "mode": "gateway",
+        "accountId": null,
+        "apiKeyId": "key-1",
+        "gatewayBaseUrl": "http://localhost:48760/v1",
+        "providerId": "cm",
+        "updatedAt": 1
+    }))
+    .expect("legacy managed state");
+    assert!(state.managed_model_slugs.is_empty());
+
+    let marker: MarkerFile = serde_json::from_value(serde_json::json!({
+        "writer": "codexmanager",
+        "mode": "gateway",
+        "accountId": null,
+        "apiKeyId": "key-1",
+        "gatewayBaseUrl": "http://localhost:48760/v1",
+        "providerId": "cm",
+        "updatedAt": 1
+    }))
+    .expect("legacy marker");
+    assert!(marker.managed_model_slugs.is_empty());
+}
+
+#[test]
 fn legacy_marker_migrates_to_internal_marker() {
     let _env_lock = crate::test_env_guard();
     let dir = temp_profile("legacy-marker");
@@ -876,6 +1680,7 @@ fn legacy_marker_migrates_to_internal_marker() {
         gateway_base_url: None,
         supports_websockets: None,
         provider_id: PROVIDER_ID.to_string(),
+        managed_model_slugs: Vec::new(),
         updated_at: now_ts(),
     };
     fs::write(

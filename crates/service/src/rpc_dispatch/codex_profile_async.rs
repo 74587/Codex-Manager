@@ -20,6 +20,17 @@ pub(super) async fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> 
             )
             .await,
         ),
+        "codexProfile/applyModels" => super::value_or_error(
+            crate::codex_profile::apply_models_async(
+                super::str_param(req, "codexHome"),
+                super::string_array_param(req, "modelSlugs"),
+                super::bool_param(req, "reloadAfterSwitch").unwrap_or(false),
+            )
+            .await,
+        ),
+        "codexProfile/restore" => super::value_or_error(
+            crate::codex_profile::restore_async(super::str_param(req, "codexHome")).await,
+        ),
         _ => return None,
     };
     Some(super::response(req, result))

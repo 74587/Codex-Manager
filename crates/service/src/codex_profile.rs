@@ -115,6 +115,8 @@ pub(crate) struct CodexProfileStatus {
     pub has_backup: bool,
     pub last_applied_at: Option<i64>,
     pub profile_writable: bool,
+    #[serde(default)]
+    pub managed_catalog_active: bool,
     pub error: Option<String>,
     pub warnings: Vec<String>,
     pub history_repair: Option<CodexProfileHistoryRepairSummary>,
@@ -240,7 +242,31 @@ struct ManagedState {
     provider_id: String,
     #[serde(default)]
     previous_model_catalog_json: Option<String>,
+    #[serde(default)]
+    managed_model_slugs: Vec<String>,
     updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedModelSelectionChange {
+    from_slug: String,
+    to_slug: Option<String>,
+}
+
+impl ManagedModelSelectionChange {
+    pub(crate) fn rename(from_slug: impl Into<String>, to_slug: impl Into<String>) -> Self {
+        Self {
+            from_slug: from_slug.into(),
+            to_slug: Some(to_slug.into()),
+        }
+    }
+
+    pub(crate) fn remove(slug: impl Into<String>) -> Self {
+        Self {
+            from_slug: slug.into(),
+            to_slug: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +284,17 @@ struct CodexProfileSettingsSnapshot {
     backups: HashMap<String, BackupEntry>,
 }
 
+struct ApplyModelsCommitSnapshot {
+    gateway_model_catalog: Option<String>,
+    config_toml: Option<String>,
+    marker: Option<String>,
+    legacy_marker: Option<String>,
+    state_setting: Option<String>,
+    backups_setting: Option<String>,
+    codex_home_setting: Option<String>,
+    managed_root_existed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MarkerFile {
@@ -269,6 +306,8 @@ struct MarkerFile {
     #[serde(default)]
     supports_websockets: Option<bool>,
     provider_id: String,
+    #[serde(default)]
+    managed_model_slugs: Vec<String>,
     updated_at: i64,
 }
 
@@ -426,6 +465,7 @@ pub(crate) async fn apply_direct_account_async(
                 supports_websockets: None,
                 provider_id: DEFAULT_HISTORY_PROVIDER_ID.to_string(),
                 previous_model_catalog_json: None,
+                managed_model_slugs: Vec::new(),
                 updated_at: now_ts(),
             },
         )?;
@@ -548,6 +588,7 @@ pub(crate) async fn apply_gateway_async(
                 supports_websockets: Some(supports_websockets),
                 provider_id: PROVIDER_ID.to_string(),
                 previous_model_catalog_json,
+                managed_model_slugs: Vec::new(),
                 updated_at: now_ts(),
             },
         )?;
@@ -557,7 +598,228 @@ pub(crate) async fn apply_gateway_async(
     .await
 }
 
+pub(crate) fn apply_models(
+    codex_home: Option<&str>,
+    model_slugs: Vec<String>,
+    reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    crate::gateway::run_upstream_io(apply_models_async(
+        codex_home,
+        model_slugs,
+        reload_after_switch,
+    ))?
+}
+
+pub(crate) async fn apply_models_async(
+    codex_home: Option<&str>,
+    model_slugs: Vec<String>,
+    _reload_after_switch: bool,
+) -> Result<CodexProfileStatus, String> {
+    let codex_home = codex_home.map(str::to_owned);
+    let lease = profile_mutation_lease().await;
+    let (profile_dir, current_config, config_toml, paths, storage) =
+        profile_commit(&lease, move || {
+            let profile_dir = resolve_profile_dir(codex_home.as_deref())?;
+            ensure_profile_dir_valid(&profile_dir)?;
+            let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+            let paths = managed_profile_paths(&profile_dir)?;
+            let config_toml = patch_config_for_managed_catalog(
+                current_config.clone(),
+                &paths.gateway_model_catalog_path,
+            )?;
+            let storage = open_storage()?.shared_handle();
+            Ok((profile_dir, current_config, config_toml, paths, storage))
+        })
+        .await?;
+    let (catalog_content, managed_model_slugs) =
+        crate::codex_model_catalog::selected_managed_model_catalog_content_async(
+            &storage,
+            model_slugs,
+        )
+        .await?;
+    drop(storage);
+    profile_commit(&lease, move || {
+        apply_models_commit_locked(
+            &profile_dir,
+            current_config.as_deref(),
+            &config_toml,
+            &paths,
+            &catalog_content,
+            managed_model_slugs,
+        )
+    })
+    .await
+}
+
+fn apply_models_commit_locked(
+    profile_dir: &Path,
+    current_config: Option<&str>,
+    config_toml: &str,
+    paths: &ManagedProfilePaths,
+    catalog_content: &str,
+    managed_model_slugs: Vec<String>,
+) -> Result<CodexProfileStatus, String> {
+    let snapshot = capture_apply_models_commit_snapshot(profile_dir, paths)?;
+    let result = (|| {
+        if paths.legacy_marker_path.exists() {
+            migrate_legacy_marker(paths)?;
+        }
+        ensure_backup(profile_dir)?;
+        maybe_fail_apply_models_commit("after_backup")?;
+
+        let mut state = managed_state_for_model_apply(profile_dir, current_config, paths)?;
+        state.managed_model_slugs = managed_model_slugs;
+        state.updated_at = now_ts();
+
+        write_atomic(&paths.gateway_model_catalog_path, catalog_content)?;
+        maybe_fail_apply_models_commit("after_catalog")?;
+        write_atomic(&profile_dir.join(CONFIG_FILE), config_toml)?;
+        maybe_fail_apply_models_commit("after_config")?;
+        write_managed_marker(profile_dir, &state)?;
+        maybe_fail_apply_models_commit("after_marker")?;
+        save_state(&state)?;
+        maybe_fail_apply_models_commit("after_state")?;
+        persist_codex_home(profile_dir)?;
+        maybe_fail_apply_models_commit("after_codex_home")?;
+        status_for_profile_after_apply(profile_dir, None, false)
+    })();
+
+    match result {
+        Ok(status) => Ok(status),
+        Err(error) => match rollback_apply_models_commit(profile_dir, paths, snapshot) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error}; rollback selected model apply failed: {rollback_error}"
+            )),
+        },
+    }
+}
+
+fn capture_apply_models_commit_snapshot(
+    profile_dir: &Path,
+    paths: &ManagedProfilePaths,
+) -> Result<ApplyModelsCommitSnapshot, String> {
+    let settings = crate::app_settings::list_app_settings_map();
+    Ok(ApplyModelsCommitSnapshot {
+        gateway_model_catalog: read_optional(&paths.gateway_model_catalog_path)?,
+        config_toml: read_optional(&profile_dir.join(CONFIG_FILE))?,
+        marker: read_optional(&paths.marker_path)?,
+        legacy_marker: read_optional(&paths.legacy_marker_path)?,
+        state_setting: settings.get(APP_SETTING_STATE_KEY).cloned(),
+        backups_setting: settings.get(APP_SETTING_BACKUPS_KEY).cloned(),
+        codex_home_setting: settings.get(APP_SETTING_CODEX_HOME_KEY).cloned(),
+        managed_root_existed: paths.root.exists(),
+    })
+}
+
+fn rollback_apply_models_commit(
+    profile_dir: &Path,
+    paths: &ManagedProfilePaths,
+    snapshot: ApplyModelsCommitSnapshot,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    collect_apply_models_rollback_error(
+        &mut errors,
+        crate::app_settings::save_persisted_app_setting(
+            APP_SETTING_CODEX_HOME_KEY,
+            snapshot.codex_home_setting.as_deref(),
+        ),
+    );
+    collect_apply_models_rollback_error(
+        &mut errors,
+        crate::app_settings::save_persisted_app_setting(
+            APP_SETTING_STATE_KEY,
+            snapshot.state_setting.as_deref(),
+        ),
+    );
+    collect_apply_models_rollback_error(
+        &mut errors,
+        restore_optional_file(&paths.marker_path, snapshot.marker.as_deref()),
+    );
+    collect_apply_models_rollback_error(
+        &mut errors,
+        restore_optional_file(&paths.legacy_marker_path, snapshot.legacy_marker.as_deref()),
+    );
+    collect_apply_models_rollback_error(
+        &mut errors,
+        restore_optional_file(
+            &profile_dir.join(CONFIG_FILE),
+            snapshot.config_toml.as_deref(),
+        ),
+    );
+    collect_apply_models_rollback_error(
+        &mut errors,
+        restore_optional_file(
+            &paths.gateway_model_catalog_path,
+            snapshot.gateway_model_catalog.as_deref(),
+        ),
+    );
+    collect_apply_models_rollback_error(
+        &mut errors,
+        crate::app_settings::save_persisted_app_setting(
+            APP_SETTING_BACKUPS_KEY,
+            snapshot.backups_setting.as_deref(),
+        ),
+    );
+
+    if !snapshot.managed_root_existed {
+        match fs::remove_dir(&paths.root) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(error) => errors.push(format!(
+                "remove newly created managed profile dir failed ({}): {error}",
+                paths.root.display()
+            )),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn collect_apply_models_rollback_error(errors: &mut Vec<String>, result: Result<(), String>) {
+    if let Err(error) = result {
+        errors.push(error);
+    }
+}
+
+#[cfg(test)]
+fn maybe_fail_apply_models_commit(stage: &str) -> Result<(), String> {
+    if std::env::var("CODEXMANAGER_TEST_APPLY_MODELS_FAIL_AFTER")
+        .ok()
+        .as_deref()
+        == Some(stage)
+    {
+        return Err(format!(
+            "injected selected model apply failure after {stage}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn maybe_fail_apply_models_commit(_stage: &str) -> Result<(), String> {
+    Ok(())
+}
+
 pub(crate) fn restore(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
+    crate::gateway::run_upstream_io(restore_async(codex_home))?
+}
+
+pub(crate) async fn restore_async(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
+    let codex_home = codex_home.map(str::to_owned);
+    let lease = profile_mutation_lease().await;
+    profile_commit(&lease, move || restore_locked(codex_home.as_deref())).await
+}
+
+fn restore_locked(codex_home: Option<&str>) -> Result<CodexProfileStatus, String> {
     let profile_dir = resolve_profile_dir(codex_home)?;
     let key = profile_key(&profile_dir);
     let mut backups = load_backups();
@@ -852,6 +1114,13 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
         .ok()
         .flatten()
         .and_then(|content| detect_gateway_config(&content).ok().flatten());
+    let managed_catalog_active = read_optional(&config_path)
+        .ok()
+        .flatten()
+        .as_deref()
+        .is_some_and(|content| {
+            config_uses_managed_catalog(content, &paths.gateway_model_catalog_path)
+        });
     let state = marker
         .map(|marker| ManagedState {
             profile_dir: key.clone(),
@@ -862,6 +1131,7 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             supports_websockets: marker.supports_websockets,
             provider_id: marker.provider_id,
             previous_model_catalog_json: None,
+            managed_model_slugs: marker.managed_model_slugs,
             updated_at: marker.updated_at,
         })
         .or(persisted);
@@ -915,6 +1185,7 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
         provider_id: detected_gateway
             .as_ref()
             .map(|gateway| gateway.provider_id.clone())
+            .or_else(|| state.as_ref().map(|state| state.provider_id.clone()))
             .unwrap_or_else(|| PROVIDER_ID.to_string()),
         has_backup: settings.backups.contains_key(&key),
         last_applied_at: if stale_non_gateway_state {
@@ -923,6 +1194,7 @@ fn status_for_profile(profile_dir: &Path) -> Result<CodexProfileStatus, String> 
             state.as_ref().map(|state| state.updated_at)
         },
         profile_writable: profile_writable(profile_dir),
+        managed_catalog_active,
         error: None,
         warnings,
         history_repair: None,
@@ -1828,15 +2100,17 @@ fn detect_mode(
 ) -> CodexProfileMode {
     let auth = read_optional(auth_path).ok().flatten();
     let config = read_optional(config_path).ok().flatten();
-    if auth.as_deref().is_some_and(auth_json_is_gateway)
-        || config
-            .as_deref()
-            .is_some_and(|content| detect_gateway_config(content).ok().flatten().is_some())
+    if config
+        .as_deref()
+        .is_some_and(|content| detect_gateway_config(content).ok().flatten().is_some())
     {
         return CodexProfileMode::Gateway;
     }
     if let Some(marker) = marker {
         return marker.mode.clone();
+    }
+    if auth.as_deref().is_some_and(auth_json_is_gateway) {
+        return CodexProfileMode::Gateway;
     }
     if auth.is_none() && config.is_none() {
         return CodexProfileMode::Missing;
@@ -2201,6 +2475,141 @@ fn patch_config_for_gateway(
     Ok(doc.to_string())
 }
 
+fn patch_config_for_managed_catalog(
+    content: Option<String>,
+    managed_catalog_path: &Path,
+) -> Result<String, String> {
+    let mut doc = parse_config(content.as_deref().unwrap_or(""))?;
+    doc.as_table_mut().insert(
+        "model_catalog_json",
+        toml_value(managed_catalog_path.to_string_lossy().as_ref()),
+    );
+    Ok(doc.to_string())
+}
+
+fn patch_config_to_restore_previous_catalog(
+    content: Option<String>,
+    managed_catalog_path: &Path,
+    previous_model_catalog_json: Option<&str>,
+) -> Result<String, String> {
+    let mut doc = parse_config(content.as_deref().unwrap_or(""))?;
+    let catalog_is_managed = doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .map(Path::new)
+        .is_some_and(|path| crate::codex_runtime::same_path(path, managed_catalog_path));
+    if catalog_is_managed {
+        match previous_model_catalog_json {
+            Some(previous) => {
+                doc.as_table_mut()
+                    .insert("model_catalog_json", toml_value(previous));
+            }
+            None => {
+                doc.as_table_mut().remove("model_catalog_json");
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn config_points_to_managed_catalog(content: &str, managed_catalog_path: &Path) -> bool {
+    parse_config(content)
+        .ok()
+        .and_then(|doc| {
+            doc.get("model_catalog_json")
+                .and_then(Item::as_str)
+                .map(PathBuf::from)
+        })
+        .as_deref()
+        .is_some_and(|path| crate::codex_runtime::same_path(path, managed_catalog_path))
+}
+
+fn config_uses_managed_catalog(content: &str, managed_catalog_path: &Path) -> bool {
+    if !config_points_to_managed_catalog(content, managed_catalog_path) {
+        return false;
+    }
+    read_optional(managed_catalog_path)
+        .ok()
+        .flatten()
+        .and_then(|catalog| serde_json::from_str::<serde_json::Value>(&catalog).ok())
+        .and_then(|catalog| catalog.get("models")?.as_array().map(Vec::len))
+        .is_some_and(|models| models > 0)
+}
+
+fn managed_state_for_model_apply(
+    profile_dir: &Path,
+    current_config: Option<&str>,
+    paths: &ManagedProfilePaths,
+) -> Result<ManagedState, String> {
+    let key = profile_key(profile_dir);
+    if let Some(state) = load_state().filter(|state| state.profile_dir == key) {
+        return Ok(state);
+    }
+    if let Ok(marker) = read_marker(&paths.marker_path) {
+        return Ok(ManagedState {
+            profile_dir: key,
+            mode: marker.mode,
+            account_id: marker.account_id,
+            api_key_id: marker.api_key_id,
+            gateway_base_url: marker.gateway_base_url,
+            supports_websockets: marker.supports_websockets,
+            provider_id: marker.provider_id,
+            previous_model_catalog_json: None,
+            managed_model_slugs: marker.managed_model_slugs,
+            updated_at: marker.updated_at,
+        });
+    }
+
+    let config = current_config.unwrap_or("");
+    let doc = parse_config(config)?;
+    let detected_gateway = detect_gateway_config(config)?;
+    let detected_mode = detect_mode(
+        &profile_dir.join(AUTH_FILE),
+        &profile_dir.join(CONFIG_FILE),
+        None,
+    );
+    let mode = if matches!(detected_mode, CodexProfileMode::Missing) {
+        CodexProfileMode::Unmanaged
+    } else {
+        detected_mode
+    };
+    let provider_id = detected_gateway
+        .as_ref()
+        .map(|gateway| gateway.provider_id.clone())
+        .or_else(|| {
+            doc.get("model_provider")
+                .and_then(Item::as_str)
+                .map(str::trim)
+                .filter(|provider| !provider.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| PROVIDER_ID.to_string());
+    let previous_model_catalog_json = doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .filter(|value| {
+            !crate::codex_runtime::same_path(Path::new(value), &paths.gateway_model_catalog_path)
+        })
+        .map(str::to_string);
+
+    Ok(ManagedState {
+        profile_dir: key,
+        mode,
+        account_id: None,
+        api_key_id: None,
+        gateway_base_url: detected_gateway
+            .as_ref()
+            .map(|gateway| gateway.base_url.clone()),
+        supports_websockets: detected_gateway
+            .as_ref()
+            .map(|gateway| gateway.supports_websockets),
+        provider_id,
+        previous_model_catalog_json,
+        managed_model_slugs: Vec::new(),
+        updated_at: now_ts(),
+    })
+}
+
 fn set_provider_bearer_auth(provider: &mut Table, bearer_token: &str) -> Result<(), String> {
     let bearer_token = bearer_token.trim();
     if bearer_token.is_empty() {
@@ -2232,83 +2641,237 @@ fn set_provider_http_header(provider: &mut Table, name: &str, value: &str) -> Re
 }
 
 pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Result<bool, String> {
-    crate::gateway::run_upstream_io(sync_active_gateway_profile_from_storage_async(storage))?
+    sync_active_gateway_profile_after_model_changes(storage, Vec::new())
+}
+
+pub(crate) fn sync_active_gateway_profile_after_model_changes(
+    storage: &Storage,
+    changes: Vec<ManagedModelSelectionChange>,
+) -> Result<bool, String> {
+    crate::gateway::run_upstream_io(sync_active_gateway_profile_from_storage_with_changes_async(
+        storage, changes,
+    ))?
 }
 
 pub(crate) async fn sync_active_gateway_profile_from_storage_async(
     storage: &Storage,
 ) -> Result<bool, String> {
+    sync_active_gateway_profile_from_storage_with_changes_async(storage, Vec::new()).await
+}
+
+async fn sync_active_gateway_profile_from_storage_with_changes_async(
+    storage: &Storage,
+    changes: Vec<ManagedModelSelectionChange>,
+) -> Result<bool, String> {
     let lease = profile_mutation_lease().await;
     let storage = storage.shared_handle();
     let phase_storage = storage.shared_handle();
     let prepared = profile_commit(&lease, move || {
-        let Some(state) = load_state() else {
+        let Some(mut state) = load_state() else {
             return Ok(None);
         };
-        if !matches!(state.mode, CodexProfileMode::Gateway) {
-            return Ok(None);
-        }
         let profile_dir = PathBuf::from(&state.profile_dir);
         let paths = managed_profile_paths(&profile_dir)?;
-        let api_key_id = state
-            .api_key_id
-            .as_deref()
-            .ok_or_else(|| "active gateway profile is missing api key id".to_string())?;
-        let catalog_policy = crate::codex_model_catalog::gateway_catalog_policy_for_api_key(
-            &phase_storage,
-            api_key_id,
-        )?;
-        let websocket_available = gateway_supports_websockets(&phase_storage, api_key_id)?;
-        let supports_websockets =
-            state.supports_websockets.unwrap_or(websocket_available) && websocket_available;
+        let had_selected_models = !state.managed_model_slugs.is_empty();
+        let selection_changed =
+            apply_managed_model_selection_changes(&mut state.managed_model_slugs, &changes);
+        let has_selected_models = !state.managed_model_slugs.is_empty();
+        if had_selected_models {
+            let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+            if !current_config.as_deref().is_some_and(|content| {
+                config_points_to_managed_catalog(content, &paths.gateway_model_catalog_path)
+            }) {
+                return Ok(None);
+            }
+        } else if !matches!(state.mode, CodexProfileMode::Gateway) && !selection_changed {
+            return Ok(None);
+        }
+
+        let detach_managed_catalog = had_selected_models
+            && !has_selected_models
+            && (!matches!(state.mode, CodexProfileMode::Gateway) || state.api_key_id.is_none());
+        let (catalog_policy, supports_websockets) =
+            if matches!(state.mode, CodexProfileMode::Gateway) && !detach_managed_catalog {
+                match state.api_key_id.as_deref() {
+                    Some(api_key_id) => {
+                        let catalog_policy = Some(
+                            crate::codex_model_catalog::gateway_catalog_policy_for_api_key(
+                                &phase_storage,
+                                api_key_id,
+                            )?,
+                        );
+                        let websocket_available =
+                            gateway_supports_websockets(&phase_storage, api_key_id)?;
+                        let supports_websockets =
+                            state.supports_websockets.unwrap_or(websocket_available)
+                                && websocket_available;
+                        (catalog_policy, Some(supports_websockets))
+                    }
+                    None if has_selected_models => (None, None),
+                    None => return Err("active gateway profile is missing api key id".to_string()),
+                }
+            } else {
+                (None, None)
+            };
         Ok(Some((
             state,
             profile_dir,
             paths,
             catalog_policy,
             supports_websockets,
+            selection_changed,
+            detach_managed_catalog,
         )))
     })
     .await?;
-    let Some((mut state, profile_dir, paths, catalog_policy, supports_websockets)) = prepared
+    let Some((
+        mut state,
+        profile_dir,
+        paths,
+        catalog_policy,
+        supports_websockets,
+        selection_changed,
+        mut detach_managed_catalog,
+    )) = prepared
     else {
         return Ok(false);
     };
-    let (catalog_content, _) = crate::codex_model_catalog::gateway_model_catalog_content_async(
-        &storage,
-        state.api_key_id.as_deref().expect("validated gateway key"),
-        catalog_policy,
-    )
-    .await?;
+    let selected_model_slugs = state.managed_model_slugs.clone();
+    let (catalog_content, canonical_model_slugs) = if detach_managed_catalog {
+        (None, Some(Vec::new()))
+    } else if selected_model_slugs.is_empty() {
+        let (content, _) = crate::codex_model_catalog::gateway_model_catalog_content_async(
+            &storage,
+            state.api_key_id.as_deref().expect("validated gateway key"),
+            catalog_policy.expect("validated gateway catalog policy"),
+        )
+        .await?;
+        (Some(content), None)
+    } else {
+        let (content, slugs) =
+            crate::codex_model_catalog::reconciled_managed_model_catalog_content_async(
+                &storage,
+                selected_model_slugs,
+            )
+            .await?;
+        match content {
+            Some(content) => (Some(content), Some(slugs)),
+            None if matches!(state.mode, CodexProfileMode::Gateway)
+                && state.api_key_id.is_some() =>
+            {
+                let (content, _) = crate::codex_model_catalog::gateway_model_catalog_content_async(
+                    &storage,
+                    state.api_key_id.as_deref().expect("validated gateway key"),
+                    catalog_policy.expect("validated gateway catalog policy"),
+                )
+                .await?;
+                (Some(content), Some(Vec::new()))
+            }
+            None => {
+                detach_managed_catalog = true;
+                (None, Some(Vec::new()))
+            }
+        }
+    };
     profile_commit(&lease, move || {
-        let api_key_id = state.api_key_id.as_deref().expect("validated gateway key");
-        write_atomic(&paths.gateway_model_catalog_path, &catalog_content)?;
-        let gateway_base_url = normalize_gateway_base_url(state.gateway_base_url.as_deref());
-        let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
-        let gateway_auth = crate::apikey::remote::gateway_auth(&storage, api_key_id)
-            .map_err(|err| format!("read api key failed: {err}"))?
-            .ok_or_else(|| "api key not found".to_string())?;
-        let secret = gateway_auth
-            .secret
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "api key secret not found".to_string())?;
-        let config_toml = patch_config_for_gateway(
-            current_config,
-            &gateway_base_url,
-            &paths.gateway_model_catalog_path,
-            supports_websockets,
-            secret,
-        )?;
-        write_atomic(&profile_dir.join(CONFIG_FILE), &config_toml)?;
-        if state.supports_websockets != Some(supports_websockets) {
-            state.supports_websockets = Some(supports_websockets);
-            save_state(&state)?;
+        let config_toml = if detach_managed_catalog {
+            let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+            Some(patch_config_to_restore_previous_catalog(
+                current_config,
+                &paths.gateway_model_catalog_path,
+                state.previous_model_catalog_json.as_deref(),
+            )?)
+        } else {
+            match (state.api_key_id.as_deref(), supports_websockets) {
+                (Some(api_key_id), Some(supports_websockets))
+                    if matches!(state.mode, CodexProfileMode::Gateway) =>
+                {
+                    let gateway_base_url =
+                        normalize_gateway_base_url(state.gateway_base_url.as_deref());
+                    let current_config = read_optional(&profile_dir.join(CONFIG_FILE))?;
+                    let gateway_auth = crate::apikey::remote::gateway_auth(&storage, api_key_id)
+                        .map_err(|err| format!("read api key failed: {err}"))?
+                        .ok_or_else(|| "api key not found".to_string())?;
+                    let secret = gateway_auth
+                        .secret
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| "api key secret not found".to_string())?;
+                    Some(patch_config_for_gateway(
+                        current_config,
+                        &gateway_base_url,
+                        &paths.gateway_model_catalog_path,
+                        supports_websockets,
+                        secret,
+                    )?)
+                }
+                _ => None,
+            }
+        };
+
+        if let Some(catalog_content) = catalog_content {
+            write_atomic(&paths.gateway_model_catalog_path, &catalog_content)?;
+        }
+        if let Some(config_toml) = config_toml {
+            write_atomic(&profile_dir.join(CONFIG_FILE), &config_toml)?;
+        }
+
+        let mut state_changed = selection_changed;
+        if let Some(supports_websockets) = supports_websockets {
+            if state.supports_websockets != Some(supports_websockets) {
+                state.supports_websockets = Some(supports_websockets);
+                state_changed = true;
+            }
+        }
+        if let Some(canonical_model_slugs) = canonical_model_slugs {
+            if state.managed_model_slugs != canonical_model_slugs {
+                state.managed_model_slugs = canonical_model_slugs;
+                state_changed = true;
+            }
+        }
+        if state_changed {
+            write_managed_state(&profile_dir, &state)?;
         }
         Ok(true)
     })
     .await
+}
+
+fn apply_managed_model_selection_changes(
+    slugs: &mut Vec<String>,
+    changes: &[ManagedModelSelectionChange],
+) -> bool {
+    let original = slugs.clone();
+    for change in changes {
+        let from_slug = change.from_slug.trim();
+        if from_slug.is_empty() {
+            continue;
+        }
+        let replacement = change
+            .to_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|slug| !slug.is_empty());
+        let mut next = Vec::with_capacity(slugs.len());
+        for slug in slugs.drain(..) {
+            if slug.eq_ignore_ascii_case(from_slug) {
+                if let Some(replacement) = replacement {
+                    next.push(replacement.to_string());
+                }
+            } else {
+                next.push(slug);
+            }
+        }
+        *slugs = next;
+    }
+
+    let mut seen = HashSet::new();
+    slugs.retain(|slug| {
+        let slug = slug.trim();
+        !slug.is_empty() && seen.insert(slug.to_ascii_lowercase())
+    });
+    *slugs != original
 }
 
 pub(crate) fn sync_active_gateway_profile_for_api_key(
@@ -2355,6 +2918,15 @@ fn write_profile_files(
     })?;
     write_atomic(&profile_dir.join(AUTH_FILE), auth_json)?;
     write_atomic(&profile_dir.join(CONFIG_FILE), config_toml)?;
+    write_managed_state(profile_dir, &state)
+}
+
+fn write_managed_state(profile_dir: &Path, state: &ManagedState) -> Result<(), String> {
+    write_managed_marker(profile_dir, state)?;
+    save_state(state)
+}
+
+fn write_managed_marker(profile_dir: &Path, state: &ManagedState) -> Result<(), String> {
     let paths = managed_profile_paths(profile_dir)?;
     let marker = MarkerFile {
         writer: "codexmanager".to_string(),
@@ -2364,13 +2936,13 @@ fn write_profile_files(
         gateway_base_url: state.gateway_base_url.clone(),
         supports_websockets: state.supports_websockets,
         provider_id: state.provider_id.clone(),
+        managed_model_slugs: state.managed_model_slugs.clone(),
         updated_at: state.updated_at,
     };
     let marker_json = serde_json::to_string_pretty(&marker)
         .map_err(|err| format!("serialize marker failed: {err}"))?;
     write_atomic(&paths.marker_path, &marker_json)?;
     let _ = remove_file_if_exists(&paths.legacy_marker_path);
-    save_state(&state)?;
     Ok(())
 }
 

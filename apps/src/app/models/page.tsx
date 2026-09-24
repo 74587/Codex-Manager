@@ -119,17 +119,6 @@ function routeStrategyLabel(
   );
 }
 
-function catalogSourceLabel(
-  candidate: CodexProfileApiKeyCandidate | undefined,
-  t: (message: string) => string,
-): string {
-  if (candidate?.catalogSource === "official") return t("OpenAI 官方目录");
-  if (candidate?.catalogSource === "managed") {
-    return t("CodexManager 本地目录");
-  }
-  return t("无法确认");
-}
-
 function CatalogStatusFact({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-border/60 bg-background/40 p-3">
@@ -247,7 +236,8 @@ export default function ModelsPage() {
     stats,
     isLoading,
     isServiceReady,
-    refreshLocal,
+    applyModels,
+    syncPrices,
     saveModel,
     updateModelState,
     updateModelStates,
@@ -257,6 +247,8 @@ export default function ModelsPage() {
     previewImport,
     commitImport,
     isRefreshing,
+    isApplyingModels,
+    isSyncingPrices,
     isSaving,
     isUpdatingModelState,
     isBatchUpdatingModelState,
@@ -266,14 +258,16 @@ export default function ModelsPage() {
     isImporting,
   } = useManagedModels();
   usePageTransitionReady("/models/", !isServiceReady || !isLoading);
-  const isModelOperationPending =
-    isLoading ||
-    isRefreshing ||
+  const isModelMutationPending =
+    isApplyingModels ||
+    isSyncingPrices ||
     isSaving ||
     isDeleting ||
     isAssigningRoutes ||
     isImporting ||
     isUpdatingModelState;
+  const isModelOperationPending =
+    isLoading || isRefreshing || isModelMutationPending;
 
   const { data: aggregateApis = [] } = useQuery({
     queryKey: ["aggregate-apis"],
@@ -308,18 +302,19 @@ export default function ModelsPage() {
         ? routeStrategyLabel(activeApiKey, t)
         : t("无法确认");
   const currentCatalog =
-    codexMode === "direct_account"
-      ? t("OpenAI 官方目录")
-      : codexMode === "gateway"
-        ? catalogSourceLabel(activeApiKey, t)
+    codexModeStatus.status?.managedCatalogActive === true
+      ? t("CodexManager 本地目录")
+      : codexMode === "direct_account" || activeApiKey?.catalogSource === "official"
+        ? t("OpenAI 官方目录")
         : t("无法确认");
-  const isLocalCatalogActive =
-    codexMode === "gateway" && activeApiKey?.catalogSource === "managed"
-      ? true
-      : codexMode === "direct_account" ||
-          (codexMode === "gateway" && activeApiKey?.catalogSource === "official")
-        ? false
-        : null;
+  const isLocalCatalogActive = codexModeStatus.status
+    ? codexModeStatus.status.managedCatalogActive
+    : null;
+  const canApplyModels =
+    isAdminMode &&
+    isServiceReady &&
+    models.length > 0 &&
+    codexModeStatus.status?.profileWritable === true;
   const localCatalogEffect =
     isLocalCatalogActive === true
       ? t("当前生效")
@@ -328,9 +323,9 @@ export default function ModelsPage() {
         : t("无法确认");
   const catalogImpactDescription =
     isLocalCatalogActive === true
-      ? t("当前平台密钥使用本地网关目录；下方模型、路由和可见性设置会影响当前 Codex。")
+      ? t("当前 Codex 已应用本地模型目录；下方模型、路由和可见性设置会影响当前 Codex。")
       : isLocalCatalogActive === false
-        ? t("当前 Codex 跟随 OpenAI 官方目录；下方设置仅供使用本地目录的平台密钥，不会改变当前模型列表。")
+        ? t("当前 Codex 尚未应用本地模型目录；点击应用模型后，模型列表将使用下方目录。")
         : t("尚未确认当前 Codex 的目录来源；请先在 Codex 接入方式页面检查配置。");
 
   const [search, setSearch] = useState("");
@@ -400,6 +395,15 @@ export default function ModelsPage() {
     setEditorOpen(true);
   };
 
+  const applyCurrentModels = () => {
+    const status = codexModeStatus.status;
+    if (!status || !canApplyModels || selectedSlugs.length === 0) return;
+    void applyModels({
+      codexHome: status.codexHome,
+      modelSlugs: [...selectedSlugs],
+    });
+  };
+
   const openEditor = (slug: string) => {
     setEditingSlug(slug);
     setEditorOpen(true);
@@ -445,15 +449,42 @@ export default function ModelsPage() {
           description={t("配置 CodexManager 本地网关目录中的模型、价格、路由和指令策略。")}
           actions={
             <>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!isServiceReady || isModelOperationPending}
-                onClick={() => void refreshLocal()}
-              >
-                <RefreshCw className={`mr-1.5 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-                {t("刷新本地目录")}
-              </Button>
+              {isAdminMode ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!isServiceReady || isModelOperationPending}
+                  onClick={() => void syncPrices()}
+                >
+                  {isSyncingPrices ? (
+                    <RefreshCw className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <CircleDollarSign className="mr-1.5 h-4 w-4" />
+                  )}
+                  {isSyncingPrices ? t("正在同步价格...") : t("同步价格")}
+                </Button>
+              ) : null}
+              {isAdminMode ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    !canApplyModels ||
+                    selectedSlugs.length === 0 ||
+                    isModelMutationPending
+                  }
+                  onClick={applyCurrentModels}
+                >
+                  <RefreshCw
+                    className={`mr-1.5 h-4 w-4 ${isApplyingModels ? "animate-spin" : ""}`}
+                  />
+                  {isApplyingModels
+                    ? t("正在应用...")
+                    : selectedSlugs.length > 0
+                      ? `${t("应用模型")} (${selectedSlugs.length})`
+                      : t("应用模型")}
+                </Button>
+              ) : null}
               {isAdminMode ? (
                 <Button
                   size="sm"
@@ -527,7 +558,7 @@ export default function ModelsPage() {
                   {t("显示来源、启用状态、价格状态、指令模式和路由状态。")}
                   {isAdminMode ? (
                     <span className="mt-0.5 block text-primary/80">
-                      {t("请先勾选一个或多个模型，再使用批量分配路由。")}
+                      {t("请先勾选一个或多个模型，再应用到 Codex 或使用批量操作。")}
                     </span>
                   ) : null}
                 </p>

@@ -169,6 +169,15 @@ pub struct ManagedModelV2Upsert {
     pub model: ManagedModelV2,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedModelPriceV2Update {
+    pub slug: String,
+    pub price: ModelPriceV2,
+    #[serde(default)]
+    pub price_tiers: Vec<ModelPriceTierV2>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedModelRouteEnsureV2 {
@@ -295,8 +304,10 @@ fn route_id(model_id: &str, route: &ModelRouteV2) -> String {
     format!("route:{}", stable_hash(&identity))
 }
 
-fn validate_price(model: &ManagedModelV2) -> Result<()> {
-    let price = &model.price;
+pub fn validate_managed_model_price_v2(
+    price: &ModelPriceV2,
+    price_tiers: &[ModelPriceTierV2],
+) -> Result<()> {
     let status = price.price_status.as_str();
     if !matches!(status, "official" | "estimated" | "custom" | "missing") {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -320,15 +331,10 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
     if status == "missing" {
         if required_rates.iter().any(Option::is_some)
             || price.cache_write_microusd_per_1m.is_some()
-            || !model.price_tiers.is_empty()
+            || !price_tiers.is_empty()
         {
             return Err(rusqlite::Error::InvalidParameterName(
                 "missing price must not contain rates or tiers".to_string(),
-            ));
-        }
-        if !model.permission_group_ids.is_empty() {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "model_price_missing: missing-price models cannot join billing groups".to_string(),
             ));
         }
         return Ok(());
@@ -338,8 +344,7 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
             "priced model requires input, cached input, and output rates".to_string(),
         ));
     }
-    let base = model
-        .price_tiers
+    let base = price_tiers
         .iter()
         .find(|tier| tier.min_input_tokens == 0)
         .ok_or_else(|| {
@@ -357,7 +362,7 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
         ));
     }
     let mut thresholds = HashSet::new();
-    for tier in &model.price_tiers {
+    for tier in price_tiers {
         if tier.min_input_tokens < 0
             || tier.input_microusd_per_1m < 0
             || tier.cached_input_microusd_per_1m < 0
@@ -371,6 +376,16 @@ fn validate_price(model: &ManagedModelV2) -> Result<()> {
                 "invalid or duplicate model price tier".to_string(),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_price(model: &ManagedModelV2) -> Result<()> {
+    validate_managed_model_price_v2(&model.price, &model.price_tiers)?;
+    if model.price.price_status == "missing" && !model.permission_group_ids.is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "model_price_missing: missing-price models cannot join billing groups".to_string(),
+        ));
     }
     Ok(())
 }
@@ -1928,6 +1943,92 @@ impl Storage {
                     .ok_or(rusqlite::Error::QueryReturnedNoRows)
             })
             .collect()
+    }
+
+    /// Replaces base and tier prices as one transaction while preserving
+    /// user-owned custom prices, including a custom price written after the
+    /// caller prepared its update plan.
+    pub fn update_managed_model_prices_v2(
+        &self,
+        updates: &[ManagedModelPriceV2Update],
+    ) -> Result<Vec<String>> {
+        let mut seen = HashSet::new();
+        for update in updates {
+            let slug = update.slug.trim();
+            if slug.is_empty() || !seen.insert(slug.to_ascii_lowercase()) {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "invalid or duplicate managed model price slug".to_string(),
+                ));
+            }
+            validate_managed_model_price_v2(&update.price, &update.price_tiers)?;
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ts();
+        let mut updated_slugs = Vec::new();
+        for update in updates {
+            let (model_id, canonical_slug) = tx
+                .query_row(
+                    "SELECT id,slug FROM models WHERE slug=?1 COLLATE NOCASE",
+                    [update.slug.trim()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "model_not_found: {}",
+                        update.slug.trim()
+                    ))
+                })?;
+            let changed = tx.execute(
+                "UPDATE model_prices SET input_microusd_per_1m=?2,
+                   cached_input_microusd_per_1m=?3,cache_write_microusd_per_1m=?4,
+                   output_microusd_per_1m=?5,price_status=?6,price_source=?7,updated_at=?8
+                 WHERE model_id=?1 AND price_status<>'custom'",
+                params![
+                    model_id,
+                    update.price.input_microusd_per_1m,
+                    update.price.cached_input_microusd_per_1m,
+                    update.price.cache_write_microusd_per_1m,
+                    update.price.output_microusd_per_1m,
+                    update.price.price_status,
+                    update.price.price_source,
+                    now
+                ],
+            )?;
+            if changed == 0 {
+                continue;
+            }
+            if update.price.price_status == "missing" {
+                tx.execute(
+                    "DELETE FROM model_group_models_v2 WHERE model_id=?1",
+                    [&model_id],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM model_price_tiers WHERE model_id=?1",
+                [&model_id],
+            )?;
+            for tier in &update.price_tiers {
+                tx.execute(
+                    "INSERT INTO model_price_tiers(model_id,min_input_tokens,
+                       input_microusd_per_1m,cached_input_microusd_per_1m,
+                       cache_write_microusd_per_1m,output_microusd_per_1m)
+                     VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![
+                        model_id,
+                        tier.min_input_tokens,
+                        tier.input_microusd_per_1m,
+                        tier.cached_input_microusd_per_1m,
+                        tier.cache_write_microusd_per_1m,
+                        tier.output_microusd_per_1m
+                    ],
+                )?;
+            }
+            updated_slugs.push(canonical_slug);
+        }
+        tx.commit()?;
+        Ok(updated_slugs)
     }
 
     pub fn upsert_missing_managed_models_and_ensure_routes_v2(

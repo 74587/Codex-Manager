@@ -75,6 +75,14 @@ type MockState = {
   batchStateUpdateDelayMs: number;
   deletes: string[];
   importCalls: Array<{ method: string; params: JsonObject }>;
+  applyModelCalls: JsonObject[];
+  applyModelError: string | null;
+  applyModelDelayMs: number;
+  managedCatalogActive: boolean;
+  priceSyncCalls: JsonObject[];
+  priceSyncError: string | null;
+  priceSyncDelayMs: number;
+  priceSyncFailedSources: string[];
   listCalls: number;
   listError: string | null;
   listDelayMs: number;
@@ -286,6 +294,14 @@ async function installMockRuntime(page: Page): Promise<MockState> {
     batchStateUpdateDelayMs: 0,
     deletes: [],
     importCalls: [],
+    applyModelCalls: [],
+    applyModelError: null,
+    applyModelDelayMs: 0,
+    managedCatalogActive: false,
+    priceSyncCalls: [],
+    priceSyncError: null,
+    priceSyncDelayMs: 0,
+    priceSyncFailedSources: [],
     listCalls: 0,
     listError: null,
     listDelayMs: 0,
@@ -365,8 +381,10 @@ async function installMockRuntime(page: Page): Promise<MockState> {
         codexHome: "/tmp/.codex",
         mode: "gateway",
         selectedAccountId: null,
-        selectedApiKeyId: "key-hybrid",
+        selectedApiKeyId: null,
         gatewayBaseUrl: "http://localhost:48760/v1",
+        profileWritable: true,
+        managedCatalogActive: state.managedCatalogActive,
         warnings: [],
       });
       return;
@@ -374,17 +392,92 @@ async function installMockRuntime(page: Page): Promise<MockState> {
     if (method === "codexProfile/listCandidates") {
       await ok({
         accounts: [],
-        apiKeys: [
-          {
-            id: "key-hybrid",
-            name: "Hybrid gateway",
-            status: "active",
-            modelSlug: null,
-            reasoningEffort: null,
-            rotationStrategy: "hybrid_rotation",
-            catalogSource: "managed",
-          },
+        apiKeys: [],
+      });
+      return;
+    }
+    if (method === "codexProfile/applyModels") {
+      state.applyModelCalls.push(structuredClone(params));
+      if (state.applyModelDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, state.applyModelDelayMs));
+      }
+      if (state.applyModelError) {
+        await route.fulfill({
+          contentType: "application/json; charset=utf-8",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32000, message: state.applyModelError },
+          }),
+        });
+        return;
+      }
+      state.managedCatalogActive = true;
+      await ok({
+        codexHome: "/tmp/.codex",
+        mode: "gateway",
+        selectedAccountId: null,
+        selectedApiKeyId: null,
+        gatewayBaseUrl: "http://localhost:48760/v1",
+        supportsWebsockets: false,
+        profileWritable: true,
+        managedCatalogActive: true,
+        warnings: [],
+        runtimeReload: {
+          requested: false,
+          matchedProcessCount: 0,
+          signaledProcessCount: 0,
+          warnings: [],
+          message: "reload not requested",
+        },
+      });
+      return;
+    }
+    if (method === "apikey/managedModelPriceSyncV2") {
+      state.priceSyncCalls.push(structuredClone(params));
+      if (state.priceSyncDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, state.priceSyncDelayMs));
+      }
+      if (state.priceSyncError) {
+        await route.fulfill({
+          contentType: "application/json; charset=utf-8",
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32000, message: state.priceSyncError },
+          }),
+        });
+        return;
+      }
+      const source = (name: string, url: string) => {
+        const failed = state.priceSyncFailedSources.includes(name);
+        return {
+          name,
+          url,
+          status: failed ? "error" : "ok",
+          providers: failed ? 0 : 4,
+          modelsSeen: failed ? 0 : 30,
+          pricedModels: failed ? 0 : 20,
+          skippedNonUsd: 0,
+          skippedMissingTextPrice: 1,
+          skippedSubscription: 0,
+          skippedTiers: 0,
+          ...(failed ? { error: `${name} unavailable` } : {}),
+        };
+      };
+      await ok({
+        sources: [
+          source("basellm", "https://basellm.github.io/llm-metadata/api/all.json"),
+          source("models.dev", "https://models.dev/api.json"),
         ],
+        catalogPrices: 40,
+        scannedModels: state.models.length,
+        updated: 2,
+        unchanged: 3,
+        preservedCustom: 1,
+        unmatched: 4,
+        ambiguous: 5,
+        updatedSlugs: ["gpt-5.4", "gpt-5.4-mini"],
       });
       return;
     }
@@ -620,21 +713,81 @@ test("模型与路由页面说明当前 Codex 是否使用本地目录", async (
     page.getByRole("main").getByRole("heading", { name: "模型与路由" }),
   ).toBeVisible();
   await expect(page.getByText("当前 Codex 模型来源", { exact: true })).toBeVisible();
-  await expect(page.getByText("混合路由", { exact: true })).toBeVisible();
+  const catalogFact = page.getByText("模型来源", { exact: true }).locator("..");
   await expect(
-    page.getByText("CodexManager 本地目录", { exact: true }),
+    catalogFact.getByText("无法确认", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("当前平台密钥使用本地网关目录；下方模型、路由和可见性设置会影响当前 Codex。", {
+    page.getByText("当前 Codex 尚未应用本地模型目录；点击应用模型后，模型列表将使用下方目录。", {
       exact: true,
     }),
   ).toBeVisible();
 });
 
-test("重新读取会更新目录并明确反馈成功与失败", async ({ page }) => {
+test("模型页头操作在桌面和窄窗口中保持可见且不重叠", async ({ page }, testInfo) => {
+  await installMockRuntime(page);
+  const actionNames = [
+    "同步价格",
+    "应用模型",
+    "导入到本地网关目录",
+    "新增网关自定义模型",
+  ];
+
+  for (const viewport of [
+    { name: "desktop", width: 1440, height: 900 },
+    { name: "narrow", width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/models/");
+    const heading = page.getByRole("main").getByRole("heading", { name: "模型与路由" });
+    await expect(heading).toBeVisible();
+    const header = heading.locator("xpath=ancestor::section[1]");
+    const headerBox = await header.boundingBox();
+    expect(headerBox).not.toBeNull();
+
+    const actionBoxes: Array<{ name: string; box: Rect }> = [];
+    for (const name of actionNames) {
+      const button = page.getByRole("button", { name, exact: true });
+      await expect(button).toBeVisible();
+      const box = await button.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(headerBox!.x - 1);
+      expect(box!.y).toBeGreaterThanOrEqual(headerBox!.y - 1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(headerBox!.x + headerBox!.width + 1);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(headerBox!.y + headerBox!.height + 1);
+      actionBoxes.push({ name, box: box! });
+    }
+
+    for (let left = 0; left < actionBoxes.length; left += 1) {
+      for (let right = left + 1; right < actionBoxes.length; right += 1) {
+        const a = actionBoxes[left];
+        const b = actionBoxes[right];
+        const overlaps =
+          a.box.x < b.box.x + b.box.width &&
+          a.box.x + a.box.width > b.box.x &&
+          a.box.y < b.box.y + b.box.height &&
+          a.box.y + a.box.height > b.box.y;
+        expect(overlaps, `${a.name} overlaps ${b.name} at ${viewport.name}`).toBe(false);
+      }
+    }
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`models-header-${viewport.name}.png`),
+      animations: "disabled",
+    });
+  }
+});
+
+test("应用模型只写入勾选项，支持图片模型且不会重载 Codex 后台", async ({ page }) => {
   const pageErrors: Error[] = [];
   page.on("pageerror", (error) => pageErrors.push(error));
   const state = await installMockRuntime(page);
+  const imageModel = state.models.find((model) => model.slug === "gpt-image-2");
+  expect(imageModel).toBeDefined();
+  imageModel!.enabled = false;
+  imageModel!.supportedInApi = false;
 
   await page.goto("/models/");
   await expect(
@@ -643,27 +796,147 @@ test("重新读取会更新目录并明确反馈成功与失败", async ({ page 
   await expect(page.getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
 
   const callsBeforeReload = state.listCalls;
-  state.models.push(importedModel());
-  await page.getByRole("button", { name: "刷新本地目录" }).click();
-  await expect(page.getByText("imported-local", { exact: true })).toBeVisible();
-  await expect(page.getByText("本地网关模型目录已刷新", { exact: true })).toBeVisible();
+  state.applyModelDelayMs = 200;
+  const applyModelsButton = page.getByRole("button", { name: "应用模型" });
+  await expect(applyModelsButton).toBeDisabled();
+
+  await page.getByLabel("选择模型 gpt-5.6-sol").click();
+  await page.getByLabel("选择模型 gpt-image-2").click();
+  const applySelectedModelsButton = page.getByRole("button", {
+    name: "应用模型 (2)",
+  });
+  await expect(applySelectedModelsButton).toBeEnabled();
+  await applySelectedModelsButton.click();
+  await expect(page.getByRole("button", { name: "正在应用..." })).toBeDisabled();
+  await expect(page.getByLabel("选择模型 gpt-image-2")).toBeDisabled();
+  await expect(
+    page.getByText("已将 2 个所选模型写入 Codex 配置；关闭并重新打开 Codex 后会显示最新模型", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("CodexManager 本地目录", { exact: true }),
+  ).toBeVisible();
   const refreshToast = page.locator("[data-sonner-toast]", {
-    hasText: "本地网关模型目录已刷新",
+    hasText: "已将 2 个所选模型写入 Codex 配置；关闭并重新打开 Codex 后会显示最新模型",
   });
   await expect(refreshToast).toHaveCSS("pointer-events", "none");
   await expect(refreshToast.locator("[data-close-button]")).toHaveCSS(
     "pointer-events",
     "auto",
   );
+  expect(state.applyModelCalls).toEqual([
+    {
+      addr: "localhost:48760",
+      codexHome: "/tmp/.codex",
+      modelSlugs: ["gpt-5.6-sol", "gpt-image-2"],
+      reloadAfterSwitch: false,
+    },
+  ]);
   expect(state.listCalls).toBeGreaterThan(callsBeforeReload);
 
-  state.listError = "catalog reload failed";
-  await page.getByRole("button", { name: "刷新本地目录" }).click();
+  state.applyModelDelayMs = 0;
+  state.applyModelError = "apply models failed";
+  await page.getByRole("button", { name: "应用模型 (2)" }).click();
   await expect(
-    page.getByText(/\u8bfb取模型失败.*catalog reload failed/),
+    page.getByText(/应用模型失败.*apply models failed/),
   ).toBeVisible();
-  await expect(page.getByText("imported-local", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("选择模型 gpt-5.6-sol")).toBeChecked();
+  await expect(page.getByLabel("选择模型 gpt-image-2")).toBeChecked();
   expect(pageErrors).toEqual([]);
+
+  state.applyModelError = null;
+  await page.getByLabel("选择模型 gpt-5.6-sol").click();
+  await page.getByLabel("选择模型 gpt-image-2").click();
+  await expect(page.getByRole("button", { name: "应用模型" })).toBeDisabled();
+});
+
+test("模型应用成功后目录重读失败不会误报应用失败", async ({ page }) => {
+  const state = await installMockRuntime(page);
+  await page.goto("/models/");
+  await expect(page.getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
+
+  state.listError = "reload after applied models failed";
+  await page.getByLabel("选择模型 gpt-5.6-sol").click();
+  await page.getByRole("button", { name: "应用模型 (1)" }).click();
+  const successText =
+    "已将 1 个所选模型写入 Codex 配置；关闭并重新打开 Codex 后会显示最新模型";
+  await expect(
+    page.locator('[data-sonner-toast][data-type="success"]', {
+      hasText: successText,
+    }),
+  ).toBeVisible();
+  const warningText = "模型已应用，但重新读取状态失败: reload after applied models failed";
+  await expect(
+    page.locator('[data-sonner-toast][data-type="warning"]', {
+      hasText: warningText,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText(/应用模型失败/)).toHaveCount(0);
+});
+
+test("同步价格会刷新目录、汇总结果并区分部分来源失败", async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  const state = await installMockRuntime(page);
+
+  await page.goto("/models/");
+  await expect(page.getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
+
+  const callsBeforeSync = state.listCalls;
+  state.priceSyncDelayMs = 200;
+  await page.getByRole("button", { name: "同步价格" }).click();
+  await expect(
+    page.getByRole("button", { name: "正在同步价格..." }),
+  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: "应用模型" })).toBeDisabled();
+  await expect(
+    page.getByText(
+      "价格同步完成：更新 2，未变化 3，保留自定义 1，未匹配 4，歧义 5",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  expect(state.priceSyncCalls).toEqual([{ addr: "localhost:48760" }]);
+  expect(state.listCalls).toBeGreaterThan(callsBeforeSync);
+
+  state.priceSyncDelayMs = 0;
+  state.priceSyncFailedSources = ["basellm"];
+  await page.getByRole("button", { name: "同步价格" }).click();
+  const warningText =
+    "价格同步部分完成（失败来源：basellm）：更新 2，未变化 3，保留自定义 1，未匹配 4，歧义 5";
+  await expect(
+    page.locator('[data-sonner-toast][data-type="warning"]', {
+      hasText: warningText,
+    }),
+  ).toBeVisible();
+
+  state.priceSyncError = "all price sources failed";
+  await page.getByRole("button", { name: "同步价格" }).click();
+  await expect(
+    page.getByText(/同步价格失败.*all price sources failed/),
+  ).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});
+
+test("价格已提交后目录重读失败不会误报同步失败", async ({ page }) => {
+  const state = await installMockRuntime(page);
+  await page.goto("/models/");
+  await expect(page.getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
+
+  state.listError = "reload after committed price sync failed";
+  await page.getByRole("button", { name: "同步价格" }).click();
+  await expect(
+    page.getByText(
+      "价格同步完成：更新 2，未变化 3，保留自定义 1，未匹配 4，歧义 5",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /价格已同步，但重新读取模型失败.*reload after committed price sync failed/,
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/同步价格失败/)).toHaveCount(0);
 });
 
 test("模型状态下拉支持四态切换并直接恢复隐藏模型", async ({ page }) => {
@@ -873,7 +1146,7 @@ test("批量状态下拉一次更新多个模型并保持原子失败", async ({
   await chooseBatchState("隐藏但启用", 2);
   await expect.poll(() => state.batchStateUpdates.length).toBe(3);
   await expect(batchStateButton(2)).toBeDisabled();
-  await expect(page.getByRole("button", { name: "刷新本地目录" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "应用模型" })).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "批量分配路由 (2)" }),
   ).toBeDisabled();
@@ -1235,7 +1508,7 @@ test("模型目录支持中文展示并为多个模型批量分配路由", async
   await expect(page.getByRole("columnheader", { name: "指令" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "路由" })).toBeVisible();
   await expect(
-    page.getByText("请先勾选一个或多个模型，再使用批量分配路由。"),
+    page.getByText("请先勾选一个或多个模型，再应用到 Codex 或使用批量操作。"),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "批量分配路由 (0)" }),

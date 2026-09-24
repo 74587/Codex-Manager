@@ -3,6 +3,7 @@ import type {
   ManagedModelImportPreviewV2Result,
   ManagedModelImportV2Params,
   ManagedModelListV2Result,
+  ManagedModelPriceSyncV2Result,
   ManagedModelStateV2Update,
   ManagedModelV2,
   ManagedModelV2Upsert,
@@ -109,6 +110,15 @@ export const managedModelsV2Client = {
       "service_managed_model_import_commit_v2",
       withAddr({
         payload: input,
+        ...(addr === undefined ? {} : { addr: addr || null }),
+      }),
+    );
+  },
+
+  syncPrices(addr?: string | null): Promise<ManagedModelPriceSyncV2Result> {
+    return invoke<ManagedModelPriceSyncV2Result>(
+      "service_managed_model_price_sync_v2",
+      withAddr({
         ...(addr === undefined ? {} : { addr: addr || null }),
       }),
     );

@@ -300,8 +300,10 @@ pub(crate) fn commit_import(
             preview.errors.len()
         ));
     }
+    let changes = super::selection_changes_for_upserts(&writes);
     if crate::storage_helpers::seaorm_enabled() {
         preview.committed = super::seaorm::upsert_many(writes)?.len();
+        super::sync_active_gateway_catalog_for_current_backend_best_effort(changes);
         return Ok(preview);
     }
     let storage =
@@ -309,7 +311,7 @@ pub(crate) fn commit_import(
     storage
         .upsert_managed_models_v2(&writes)
         .map_err(|err| format!("commit model import failed: {err}"))?;
-    super::sync_active_gateway_catalog_best_effort(&storage);
+    super::sync_active_gateway_catalog_after_model_changes_best_effort(&storage, changes);
     preview.committed = writes.len();
     Ok(preview)
 }

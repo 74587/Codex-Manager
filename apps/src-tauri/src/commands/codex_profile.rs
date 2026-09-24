@@ -121,6 +121,21 @@ pub async fn service_codex_profile_apply_gateway(
     rpc_call_in_background("codexProfile/applyGateway", addr, Some(params)).await
 }
 
+#[tauri::command]
+pub async fn service_codex_profile_apply_models(
+    addr: Option<String>,
+    codex_home: Option<String>,
+    model_slugs: Vec<String>,
+    reload_after_switch: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "codexHome": codex_home,
+        "modelSlugs": model_slugs,
+        "reloadAfterSwitch": reload_after_switch.unwrap_or(false),
+    });
+    rpc_call_in_background("codexProfile/applyModels", addr, Some(params)).await
+}
+
 /// 函数 `service_codex_profile_restore`
 ///
 /// 作者: gaohongshun

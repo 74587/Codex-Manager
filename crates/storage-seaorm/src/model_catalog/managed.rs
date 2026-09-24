@@ -6,7 +6,8 @@ use crate::{
     ModelRoutesRepository,
 };
 use codexmanager_core::storage::{
-    now_ts, validate_managed_model_v2, ManagedModelBatchStateV2Update, ManagedModelV2,
+    now_ts, validate_managed_model_price_v2, validate_managed_model_v2,
+    ManagedModelBatchStateV2Update, ManagedModelPriceV2Update, ManagedModelV2,
     ManagedModelV2Upsert, ModelCatalogV2Stats,
 };
 use sea_orm::{
@@ -225,6 +226,70 @@ impl ManagedModelsRepository {
         }
         tx.commit().await?;
         Ok(result)
+    }
+
+    pub async fn update_prices(
+        db: &DatabaseConnection,
+        updates: &[ManagedModelPriceV2Update],
+    ) -> Result<Vec<String>, DbErr> {
+        let mut seen = std::collections::HashSet::new();
+        for update in updates {
+            let slug = update.slug.trim();
+            if slug.is_empty() || !seen.insert(slug.to_ascii_lowercase()) {
+                return Err(DbErr::Custom(
+                    "invalid or duplicate managed model price slug".into(),
+                ));
+            }
+            validate_managed_model_price_v2(&update.price, &update.price_tiers)
+                .map_err(|error| DbErr::Custom(error.to_string()))?;
+        }
+
+        let tx = db.begin().await?;
+        // Full model writes use the same lock, so a custom price cannot be
+        // interleaved between this check and the tier replacement.
+        crate::UsersRepository::lock(&tx, "model_groups").await?;
+        let now = now_ts();
+        let mut updated_slugs = Vec::new();
+        for update in updates {
+            let model = Self::get(&tx, update.slug.trim())
+                .await?
+                .ok_or_else(|| DbErr::Custom(format!("model_not_found: {}", update.slug)))?;
+            if model.price.price_status == "custom" {
+                continue;
+            }
+            if update.price.price_status == "missing" {
+                use crate::model_groups::group_models_v2 as gm;
+                gm::Entity::delete_many()
+                    .filter(gm::Column::ModelId.eq(&model.id))
+                    .exec(&tx)
+                    .await?;
+            }
+            ModelPricesRepository::put(
+                &tx,
+                CatalogPriceRecord {
+                    model_id: model.id.clone(),
+                    price: update.price.clone(),
+                    created_at: model.created_at,
+                    updated_at: now,
+                },
+            )
+            .await?;
+            let tiers = update
+                .price_tiers
+                .iter()
+                .cloned()
+                .map(|tier| CatalogPriceTierRecord {
+                    model_id: model.id.clone(),
+                    tier,
+                    created_at: model.created_at,
+                    updated_at: now,
+                })
+                .collect::<Vec<_>>();
+            ModelPriceTiersRepository::replace_for_model(&tx, &model.id, &tiers).await?;
+            updated_slugs.push(model.slug);
+        }
+        tx.commit().await?;
+        Ok(updated_slugs)
     }
 
     async fn write(

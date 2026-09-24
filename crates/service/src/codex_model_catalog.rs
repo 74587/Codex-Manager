@@ -3,6 +3,7 @@ use codexmanager_core::storage::{Account, Storage};
 use reqwest::header::{ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, ETAG, USER_AGENT};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -137,17 +138,123 @@ pub(crate) async fn gateway_model_catalog_content_async(
             })
             .await
         }
-        GatewayCatalogPolicy::Managed => {
-            let storage = storage.shared_handle();
-            catalog_phase(move || {
-                let catalog =
-                    crate::models_v2::text_generation_models_response_with_storage(&storage)?;
-                let models_count = catalog.models.len();
-                Ok((serialize_gateway_model_catalog(&catalog)?, models_count))
-            })
-            .await
-        }
+        GatewayCatalogPolicy::Managed => managed_model_catalog_content_async(storage).await,
     }
+}
+
+pub(crate) async fn managed_model_catalog_content_async(
+    storage: &Storage,
+) -> Result<(String, usize), String> {
+    let storage = storage.shared_handle();
+    catalog_phase(move || {
+        let catalog = crate::models_v2::text_generation_models_response_with_storage(&storage)?;
+        let models_count = catalog.models.len();
+        Ok((serialize_gateway_model_catalog(&catalog)?, models_count))
+    })
+    .await
+}
+
+pub(crate) async fn selected_managed_model_catalog_content_async(
+    storage: &Storage,
+    model_slugs: Vec<String>,
+) -> Result<(String, Vec<String>), String> {
+    let storage = storage.shared_handle();
+    catalog_phase(move || {
+        let mut requested = Vec::new();
+        let mut seen = HashSet::new();
+        for slug in model_slugs {
+            let slug = slug.trim();
+            if slug.is_empty() {
+                continue;
+            }
+            let normalized = slug.to_ascii_lowercase();
+            if seen.insert(normalized.clone()) {
+                requested.push((slug.to_string(), normalized));
+            }
+        }
+        if requested.is_empty() {
+            return Err("no models selected".to_string());
+        }
+
+        let requested_keys = requested
+            .iter()
+            .map(|(_, normalized)| normalized.clone())
+            .collect::<HashSet<_>>();
+        let selected = crate::models_v2::list_with_storage(&storage, true)?
+            .items
+            .into_iter()
+            .filter(|model| requested_keys.contains(&model.slug.to_ascii_lowercase()))
+            .collect::<Vec<_>>();
+        let selected_keys = selected
+            .iter()
+            .map(|model| model.slug.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let unknown = requested
+            .into_iter()
+            .filter_map(|(requested_slug, normalized)| {
+                (!selected_keys.contains(&normalized)).then_some(requested_slug)
+            })
+            .collect::<Vec<_>>();
+        if !unknown.is_empty() {
+            return Err(format!(
+                "unknown managed model slug(s): {}",
+                unknown.join(", ")
+            ));
+        }
+
+        let canonical_slugs = selected.iter().map(|model| model.slug.clone()).collect();
+        let catalog = ModelsResponse {
+            models: selected.iter().map(selected_codex_model_info).collect(),
+            ..ModelsResponse::default()
+        };
+        Ok((serialize_gateway_model_catalog(&catalog)?, canonical_slugs))
+    })
+    .await
+}
+
+pub(crate) async fn reconciled_managed_model_catalog_content_async(
+    storage: &Storage,
+    model_slugs: Vec<String>,
+) -> Result<(Option<String>, Vec<String>), String> {
+    let storage = storage.shared_handle();
+    catalog_phase(move || {
+        let requested_keys = model_slugs
+            .into_iter()
+            .map(|slug| slug.trim().to_ascii_lowercase())
+            .filter(|slug| !slug.is_empty())
+            .collect::<HashSet<_>>();
+        let selected = crate::models_v2::list_with_storage(&storage, true)?
+            .items
+            .into_iter()
+            .filter(|model| requested_keys.contains(&model.slug.to_ascii_lowercase()))
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return Ok((None, Vec::new()));
+        }
+
+        let canonical_slugs = selected.iter().map(|model| model.slug.clone()).collect();
+        let catalog = ModelsResponse {
+            models: selected.iter().map(selected_codex_model_info).collect(),
+            ..ModelsResponse::default()
+        };
+        Ok((
+            Some(serialize_gateway_model_catalog(&catalog)?),
+            canonical_slugs,
+        ))
+    })
+    .await
+}
+
+fn selected_codex_model_info(
+    model: &codexmanager_core::storage::ManagedModelV2,
+) -> codexmanager_core::rpc::types::ModelInfo {
+    let mut info = crate::models_v2::model_info(model);
+    // Applying an explicit selection is the user's allowlist for Codex's picker.
+    // Keep the stored flags unchanged for gateway/API behavior, but do not let
+    // Codex hide an explicitly selected entry when it reads this dedicated file.
+    info.visibility = Some("list".to_string());
+    info.supported_in_api = true;
+    info
 }
 
 async fn load_official_snapshot_async(
@@ -507,7 +614,7 @@ fn prepare_managed_model(model: &mut codexmanager_core::rpc::types::ModelInfo) {
     {
         model.shell_type = Some("shell_command".to_string());
     }
-    model.visibility.get_or_insert_with(|| "list".to_string());
+    model.visibility = Some("list".to_string());
     model.base_instructions.get_or_insert_with(String::new);
     model
         .availability_nux
@@ -627,6 +734,91 @@ fn temp_file_path(parent: &Path, target: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use codexmanager_core::rpc::types::ModelInfo;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn selected_catalog_uses_catalog_order_and_canonical_slugs() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codexmanager-selected-models-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create catalog temp dir");
+        let db_path = temp_root.join("codexmanager.db");
+        let storage = Storage::open(&db_path).expect("open catalog storage");
+        storage.init().expect("initialize catalog storage");
+        let mut image_model = storage
+            .get_managed_model_v2("gpt-image-2")
+            .expect("read image model")
+            .expect("seeded image model");
+        image_model.enabled = false;
+        image_model.supported_in_api = false;
+        image_model.visibility = "hide".to_string();
+        storage
+            .upsert_managed_model_v2(&codexmanager_core::storage::ManagedModelV2Upsert {
+                previous_slug: Some(image_model.slug.clone()),
+                model: image_model,
+            })
+            .expect("make image model hidden and unavailable");
+        let requested_keys = HashSet::from(["gpt-5.4", "gpt-image-2"]);
+        let expected = crate::models_v2::list_with_storage(&storage, true)
+            .expect("list full catalog")
+            .items
+            .into_iter()
+            .filter(|model| requested_keys.contains(model.slug.as_str()))
+            .map(|model| model.slug)
+            .collect::<Vec<_>>();
+        assert_eq!(expected.len(), 2);
+
+        let (content, canonical) = selected_managed_model_catalog_content_async(
+            &storage,
+            vec![
+                " GPT-IMAGE-2 ".to_string(),
+                "gpt-5.4".to_string(),
+                "GPT-5.4".to_string(),
+            ],
+        )
+        .await
+        .expect("build selected catalog");
+        assert_eq!(canonical, expected);
+        let catalog: serde_json::Value = serde_json::from_str(&content).expect("parse catalog");
+        let models = catalog["models"].as_array().expect("models array");
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model["slug"].as_str().expect("model slug").to_string())
+                .collect::<Vec<_>>(),
+            canonical
+        );
+        assert!(models
+            .iter()
+            .all(|model| model["visibility"].as_str() == Some("list")));
+        assert!(!models.iter().any(|model| model["slug"] == "gpt-5.6-sol"));
+        let image = models
+            .iter()
+            .find(|model| model["slug"] == "gpt-image-2")
+            .expect("selected image model");
+        assert_eq!(image["visibility"], "list");
+        assert_eq!(image["supported_in_api"], true);
+        assert_eq!(image["supports_text_generation"], false);
+        assert_eq!(image["output_modalities"], serde_json::json!(["image"]));
+        assert_eq!(
+            image["supported_endpoints"],
+            serde_json::json!(["/v1/images/generations", "/v1/images/edits"])
+        );
+        let stored_image = storage
+            .get_managed_model_v2("gpt-image-2")
+            .expect("read persisted image model")
+            .expect("persisted image model");
+        assert!(!stored_image.enabled);
+        assert!(!stored_image.supported_in_api);
+        assert_eq!(stored_image.visibility, "hide");
+
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_root);
+    }
 
     #[test]
     fn gateway_catalog_serializes_models_response_shape() {

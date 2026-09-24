@@ -1,5 +1,6 @@
 use super::*;
 use crate::storage_helpers::seaorm_block_on;
+use codexmanager_core::storage::ManagedModelPriceV2Update;
 use codexmanager_storage_seaorm::ManagedModelsRepository;
 
 pub(super) fn list(include_hidden: bool) -> Result<ManagedModelListV2Result, String> {
@@ -28,6 +29,15 @@ pub(super) fn upsert_many(
 ) -> Result<Vec<ManagedModelV2>, String> {
     seaorm_block_on(move |storage| async move {
         ManagedModelsRepository::upsert_many(storage.connection(), &inputs)
+            .await
+            .map_err(|e| e.to_string())
+    })
+}
+pub(super) fn update_prices(
+    updates: Vec<ManagedModelPriceV2Update>,
+) -> Result<Vec<String>, String> {
+    seaorm_block_on(move |storage| async move {
+        ManagedModelsRepository::update_prices(storage.connection(), &updates)
             .await
             .map_err(|e| e.to_string())
     })
