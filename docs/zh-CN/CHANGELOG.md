@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-25
+
 ### Added
 
 - 模型目录 revision 9 新增 `gpt-6-sol`、`gpt-6-luna`、`gpt-image-2.5-sunburst` 和 `gpt-image-2.5-flare`；fresh 目录现在包含 11 个 builtin，其中 10 个默认可见，`codex-auto-review` 保持隐藏。
@@ -14,6 +16,14 @@
 - 从 builtin 目录移除已于 2026-08-31 从 ChatGPT 登录的 Codex 退役的 `gpt-5.4`、`gpt-5.4-mini`，以及在该登录方式下 deprecated 的 `gpt-5.2`；通用 API Key 仍可通过 custom 模型使用 `gpt-5.2`。revision 9 会删除未定制 builtin 及其默认账号池 route；用户编辑、自定义价格或 tiers、非默认 routes 与 permission/API Key 关联会转为 custom 保留。
 - free-account 模型上限选项改为基于当前文本模型目录生成；已持久化但不再属于当前候选目录、图片专用或旧 fallback 的值统一归一化为 `auto`。账号预热和账号文本测试的 fallback 改为 `gpt-6-luna`，观测桥接的缺省模型改为 `gpt-6-sol`。
 - 价格同步继续在未勾选时保护自定义价格；明确勾选模型后，允许外部价格覆盖所选模型的自定义价格，未选中的自定义模型不会被触碰。
+- 发布版本提升到 `0.6.2`，同步 workspace、前端、Tauri 桌面端和锁文件。
+
+### Fixed
+
+- 修复桌面端开发启动时 pnpm 命令解析和 Next 代理的启动竞态；页面隐藏后会停止页面级轮询和后台任务，账号测试与 SSE 在终态主动清理监听。
+- 修复 service、gateway、账号和 usage 路径的资源生命周期、请求取消、队列指标与并发边界，减少旧同步桥接在生产路径中的残留。
+- 强化旧 SQLite 模型目录自动迁移：加入迁移锁、在线备份、迁移前检查、大小写冲突兼容和迁移后冒烟检查；迁移失败时自动恢复备份，避免升级过程中破坏原库。
+- 为 GHCR Release Compose 增加可选 Docker OTA profile；默认只检查并等待用户确认，用户明确启用 `ota-auto` 后才会自动更新带标记的 service/web 镜像，固定版本标签仍保持不变。
 
 ## [0.6.1] - 2026-09-24
 
@@ -564,7 +574,9 @@
 ### Changed
 - 账号管理页操作区整合为单一“账号操作”下拉菜单，替代右侧多按钮堆叠，界面更简洁。
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.2
+[0.6.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.0
 [0.5.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...v0.5.3

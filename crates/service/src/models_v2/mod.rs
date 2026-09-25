@@ -141,6 +141,8 @@ pub(crate) fn delete(slug: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Kept as a compatibility shim for callers that do not have a change list yet.
+#[allow(dead_code)]
 pub(super) fn sync_active_gateway_catalog_best_effort(
     storage: &codexmanager_core::storage::Storage,
 ) {

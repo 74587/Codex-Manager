@@ -7,6 +7,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::header::{CACHE_CONTROL, PRAGMA};
 use reqwest::{Client, Proxy, Url};
 use std::collections::HashMap;
+#[cfg(test)]
 use std::future::Future;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
@@ -215,6 +216,7 @@ struct AccountsCheckEntitlement {
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 fn run_usage_future<F, T, E>(future: F) -> Result<T, E>
 where
     F: Future<Output = Result<T, E>> + Send,
@@ -1064,6 +1066,7 @@ fn current_upstream_proxy_url() -> Option<String> {
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn fetch_usage_snapshot(
     base_url: &str,
     bearer: &str,
@@ -1072,6 +1075,7 @@ pub(crate) fn fetch_usage_snapshot(
     fetch_usage_snapshot_with_auth_context(base_url, bearer, chatgpt_account_id, false)
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_usage_snapshot_with_auth_context(
     base_url: &str,
     auth_token: &str,
@@ -1087,6 +1091,7 @@ pub(crate) fn fetch_usage_snapshot_with_auth_context(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_usage_snapshot_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
@@ -1102,6 +1107,7 @@ pub(crate) fn fetch_usage_snapshot_with_explicit_proxy(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
     base_url: &str,
     auth_token: &str,
@@ -1119,6 +1125,7 @@ pub(crate) fn fetch_usage_snapshot_with_auth_context_and_explicit_proxy(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_reset_credits_snapshot(
     base_url: &str,
     bearer: &str,
@@ -1132,6 +1139,7 @@ pub(crate) fn fetch_reset_credits_snapshot(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_reset_credits_snapshot_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
@@ -1151,6 +1159,7 @@ pub(crate) fn fetch_reset_credits_snapshot_with_explicit_proxy(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn consume_reset_credit_request(
     base_url: &str,
     bearer: &str,
@@ -1166,6 +1175,7 @@ pub(crate) fn consume_reset_credit_request(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn consume_reset_credit_request_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
@@ -1362,6 +1372,7 @@ pub(crate) async fn consume_reset_credit_request_async(
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn fetch_account_subscription(
     base_url: &str,
     bearer: &str,
@@ -1377,6 +1388,7 @@ pub(crate) fn fetch_account_subscription(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn fetch_account_subscription_with_explicit_proxy(
     base_url: &str,
     bearer: &str,
@@ -1612,6 +1624,7 @@ pub(crate) async fn fetch_account_subscription_async(
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn refresh_access_token(
     issuer: &str,
     client_id: &str,
@@ -1625,6 +1638,7 @@ pub(crate) fn refresh_access_token(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn refresh_access_token_with_explicit_proxy(
     issuer: &str,
     client_id: &str,

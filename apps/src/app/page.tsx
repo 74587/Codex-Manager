@@ -70,6 +70,7 @@ import { useMemberDashboardSummary } from "@/hooks/useMemberDashboardSummary";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useCodexProfileModeStatus } from "@/hooks/useCodexProfileModeStatus";
+import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import {
   estimateChartYAxisWidth,
   formatCompactTokenAmount,
@@ -820,6 +821,7 @@ function AdminUsageAnalyticsCard({
 }
 
 function AdminDashboard() {
+  const isPageActive = useDesktopPageActive("/");
   const { stats, isLoading, isServiceReady } = useDashboardStats({
     requestLogLimit: 0,
     includeAccountHints: false,
@@ -831,7 +833,7 @@ function AdminDashboard() {
     includeAccountDetails: false,
   });
   const { isDirectAccountMode } = useCodexProfileModeStatus({
-    enabled: true,
+    enabled: isPageActive,
     refetchIntervalMs: 10_000,
   });
   const localDayRange = useLocalDayRange();

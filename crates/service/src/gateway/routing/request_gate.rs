@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+#[cfg(test)]
 use std::time::Duration;
 
 use codexmanager_core::storage::now_ts;
@@ -103,6 +104,7 @@ impl RequestGateLock {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn acquire(self: &Arc<Self>) -> Result<RequestGateGuard, RequestGateAcquireError> {
         let state = match self.state.lock() {
             Ok(guard) => guard,
@@ -133,6 +135,7 @@ impl RequestGateLock {
     ///
     /// # 返回
     /// 返回函数执行结果
+    #[cfg(test)]
     pub(crate) fn acquire_with_timeout(
         self: &Arc<Self>,
         timeout: Duration,

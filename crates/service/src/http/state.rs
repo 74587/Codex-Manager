@@ -17,6 +17,8 @@ pub struct AppState {
     pub(crate) rpc_slots: Arc<Semaphore>,
     task_channel: broadcast::Sender<&'static str>,
     pub(crate) shutdown: watch::Sender<bool>,
+    // Shared listener client is reserved for handlers that opt into connection reuse.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) http_client: reqwest::Client,
 }
 
@@ -92,16 +94,19 @@ impl AppState {
     /// The shared client is composed with the listener so handlers and
     /// adapters can reuse one connection pool instead of constructing a
     /// client per request.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn http_client(&self) -> &reqwest::Client {
         &self.http_client
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_shutting_down(&self) -> bool {
         *self.shutdown.borrow()
     }
 
     /// Subscribe to listener-owned task signals without coupling handlers to
     /// a concrete executor or persistence implementation.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn task_receiver(&self) -> broadcast::Receiver<&'static str> {
         self.task_channel.subscribe()
     }

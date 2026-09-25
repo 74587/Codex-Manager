@@ -808,11 +808,11 @@ pub(crate) async fn apply_direct_aggregate_async(
             },
         )?;
         persist_codex_home(&profile_dir)?;
-        status_for_profile_after_apply(
-            &profile_dir,
-            Some(DIRECT_AGGREGATE_PROVIDER_ID),
-            reload_after_switch,
-        )
+        // Direct aggregate mode only changes the active upstream configuration. Keep the
+        // potentially multi-gigabyte history repair out of the switch RPC so desktop clients
+        // can receive the new profile status before their short RPC timeout expires. History
+        // repair remains available through the explicit repair action.
+        status_for_profile_after_apply(&profile_dir, None, reload_after_switch)
     })
     .await
 }

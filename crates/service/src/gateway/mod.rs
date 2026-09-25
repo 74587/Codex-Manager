@@ -263,6 +263,8 @@ pub(super) use upstream::header_profile::{
 };
 
 // HTTP backend runtime metrics are exported via the gateway `/metrics` endpoint as well.
+// The blocking backend is test-only; production uses the native async listener.
+#[cfg(test)]
 pub(crate) fn record_http_queue_capacity(normal_capacity: usize, stream_capacity: usize) {
     metrics::record_http_queue_capacity(normal_capacity, stream_capacity);
 }
@@ -278,6 +280,7 @@ pub(crate) fn record_http_queue_capacity(normal_capacity: usize, stream_capacity
 ///
 /// # 返回
 /// 无
+#[cfg(test)]
 pub(crate) fn record_http_queue_enqueue(is_stream_queue: bool) {
     metrics::record_http_queue_enqueue(is_stream_queue);
 }
@@ -293,6 +296,7 @@ pub(crate) fn record_http_queue_enqueue(is_stream_queue: bool) {
 ///
 /// # 返回
 /// 无
+#[cfg(test)]
 pub(crate) fn record_http_queue_dequeue(is_stream_queue: bool) {
     metrics::record_http_queue_dequeue(is_stream_queue);
 }
@@ -308,6 +312,7 @@ pub(crate) fn record_http_queue_dequeue(is_stream_queue: bool) {
 ///
 /// # 返回
 /// 无
+#[cfg(test)]
 pub(crate) fn record_http_queue_enqueue_failure() {
     metrics::record_http_queue_enqueue_failure();
 }
@@ -488,7 +493,9 @@ use openai_fallback::try_openai_fallback;
 #[cfg(test)]
 pub(crate) use request_entry::handle_gateway_request;
 pub(crate) use request_entry::handle_gateway_request_async;
-use request_gate::{request_gate_lock, RequestGateAcquireError};
+use request_gate::request_gate_lock;
+#[cfg(test)]
+use request_gate::RequestGateAcquireError;
 pub(crate) use request_log::write_request_log;
 use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
 use route_quality::record_route_quality;
@@ -1408,6 +1415,8 @@ pub(crate) fn gateway_mark_account_cooldown_for_status(account_id: &str, status:
 ///
 /// # 返回
 /// 返回函数执行结果
+// Legacy synchronous entry point; native request paths use the async variant below.
+#[allow(dead_code)]
 pub(crate) fn gateway_resolve_openai_bearer_token(
     storage: &codexmanager_core::storage::Storage,
     account: &codexmanager_core::storage::Account,

@@ -8,6 +8,7 @@ use tokio::sync::{
     Mutex as AsyncMutex,
 };
 
+#[cfg(test)]
 use crate::account_warmup::AccountWarmupItemResult;
 use crate::storage_helpers::open_storage;
 

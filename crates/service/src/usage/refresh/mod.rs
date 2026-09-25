@@ -5,7 +5,9 @@ use codexmanager_core::storage::{
 use codexmanager_core::usage::has_usable_luna_reserve;
 #[cfg(test)]
 use codexmanager_core::usage::parse_usage_snapshot;
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+#[cfg(test)]
+use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::{Sender, TrySendError};
 use futures_util::{FutureExt, StreamExt};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -214,6 +216,7 @@ where
     *guard = Some(Arc::new(handler));
 }
 
+#[cfg(test)]
 pub(crate) fn subscribe_usage_refresh_completed() -> Receiver<UsageRefreshCompletedEvent> {
     let (sender, receiver) = bounded(32);
     let subscribers = USAGE_REFRESH_COMPLETED_SUBSCRIBERS.get_or_init(|| Mutex::new(Vec::new()));

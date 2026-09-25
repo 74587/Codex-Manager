@@ -174,9 +174,10 @@ export function AggregateApiModal({
 
   useEffect(() => {
     if (!open) return;
-    window.requestAnimationFrame(() => {
+    const frameId = window.requestAnimationFrame(() => {
       bodyScrollRef.current?.scrollTo({ top: 0 });
     });
+    return () => window.cancelAnimationFrame(frameId);
   }, [open]);
 
   useEffect(() => {

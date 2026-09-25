@@ -30,6 +30,8 @@ pub(crate) async fn scope_response_cancellation<F: Future>(
         .await
 }
 
+// Retained for the legacy synchronous request bridge; native handlers use task-local cancellation.
+#[allow(dead_code)]
 pub(crate) struct ResponseCancellationScope(Option<watch::Receiver<bool>>);
 
 impl Drop for ResponseCancellationScope {
@@ -328,6 +330,7 @@ impl GatewayRequest {
         delivery
     }
 
+    #[allow(dead_code)]
     pub(crate) fn enter_cancellation_scope(&self) -> ResponseCancellationScope {
         ResponseCancellationScope(
             RESPONSE_CANCELLATION.with(|current| current.replace(Some(self.cancelled.clone()))),

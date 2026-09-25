@@ -1,4 +1,5 @@
 use codexmanager_core::storage::Storage;
+#[cfg(test)]
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use futures_util::{FutureExt, TryStreamExt};
 use rand::RngCore;
@@ -8,7 +9,9 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -154,17 +157,20 @@ struct ActiveAccountTest {
     cancel_flag: Arc<AtomicBool>,
 }
 
+#[cfg(test)]
 struct AccountTestSubscriber {
     id: u64,
     sender: Sender<AccountTestEvent>,
 }
 
+#[cfg(test)]
 pub(crate) struct AccountTestEventSubscription {
     test_id: String,
     subscriber_id: u64,
     receiver: Receiver<AccountTestEvent>,
 }
 
+#[cfg(test)]
 impl AccountTestEventSubscription {
     pub(crate) fn recv_timeout(
         &self,
@@ -174,6 +180,7 @@ impl AccountTestEventSubscription {
     }
 }
 
+#[cfg(test)]
 impl Drop for AccountTestEventSubscription {
     fn drop(&mut self) {
         if let Some(subscribers) = ACCOUNT_TEST_EVENT_SUBSCRIBERS.get() {
@@ -194,10 +201,12 @@ impl Drop for AccountTestEventSubscription {
 
 static ACCOUNT_TEST_EVENT_HANDLER: OnceLock<Mutex<Option<AccountTestEventHandler>>> =
     OnceLock::new();
+#[cfg(test)]
 static ACCOUNT_TEST_EVENT_SUBSCRIBERS: OnceLock<
     Mutex<HashMap<String, Vec<AccountTestSubscriber>>>,
 > = OnceLock::new();
 static ACTIVE_ACCOUNT_TESTS: OnceLock<Mutex<HashMap<String, ActiveAccountTest>>> = OnceLock::new();
+#[cfg(test)]
 static ACCOUNT_TEST_SUBSCRIBER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 函数 `set_account_test_event_handler`
@@ -230,6 +239,7 @@ where
 ///
 /// # 返回
 /// 返回账号测试事件订阅通道
+#[cfg(test)]
 pub(crate) fn subscribe_account_test_events(test_id: &str) -> AccountTestEventSubscription {
     let (sender, receiver) = bounded(64);
     let subscriber_id = ACCOUNT_TEST_SUBSCRIBER_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -268,6 +278,7 @@ pub(crate) fn notify_account_test_event(event: AccountTestEvent) {
     if let Some(handler) = handler {
         handler(event.clone());
     }
+    #[cfg(test)]
     if let Some(subscribers) = ACCOUNT_TEST_EVENT_SUBSCRIBERS.get() {
         let mut guard =
             crate::lock_utils::lock_recover(subscribers, "account_test_event_subscribers");

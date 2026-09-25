@@ -354,7 +354,7 @@ pub(crate) fn set_manual_preferred_account(account_id: &str) -> Result<(), Strin
     if id.is_empty() {
         return Err("accountId is required".to_string());
     }
-    let mut storage = crate::storage_helpers::open_storage()
+    let storage = crate::storage_helpers::open_storage()
         .ok_or_else(|| "storage not initialized".to_string())?;
     let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
     storage
@@ -375,7 +375,7 @@ pub(crate) fn set_manual_preferred_account(account_id: &str) -> Result<(), Strin
 /// # 返回
 /// 无
 pub(crate) fn clear_manual_preferred_account() {
-    if let Some(mut storage) = crate::storage_helpers::open_storage() {
+    if let Some(storage) = crate::storage_helpers::open_storage() {
         let storage = &crate::account::remote_storage::AccountStorage::new(&storage);
         let _ = storage.set_preferred_account(None);
     }

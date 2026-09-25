@@ -231,7 +231,9 @@ export default function ModelsPage() {
   const role = resolveSessionRole(session, isSessionLoading, isDesktopRuntime);
   const isAdminMode = isAdminRole(role);
   const isPageActive = useDesktopPageActive("/models/");
-  const codexModeStatus = useCodexProfileModeStatus({ enabled: isAdminMode });
+  const codexModeStatus = useCodexProfileModeStatus({
+    enabled: isAdminMode && isPageActive,
+  });
   const {
     models,
     stats,

@@ -6,6 +6,8 @@ use std::{collections::HashMap, ops::Deref};
 fn error(message: String) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure((), Some(message))
 }
+// Keep the full dual-backend adapter surface available for SeaORM runtime selection.
+#[allow(dead_code)]
 impl AccountStorage<'_> {
     pub(crate) fn upsert_plugin_install(&self, plugin: &PluginInstall) -> rusqlite::Result<()> {
         if !seaorm_enabled() {

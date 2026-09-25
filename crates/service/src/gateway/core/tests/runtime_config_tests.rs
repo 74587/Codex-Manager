@@ -1697,6 +1697,7 @@ fn set_originator_updates_env_and_dynamic_user_agent() {
 #[test]
 fn set_codex_user_agent_version_updates_env_and_user_agent() {
     let _guard = crate::test_env_guard();
+    set_originator("codex_cli_rs").expect("reset originator for user agent assertion");
 
     let applied = set_codex_user_agent_version("0.102.1").expect("set codex user agent version");
 

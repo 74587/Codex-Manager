@@ -2082,7 +2082,7 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
         id: 31.into(),
         method: "appSettings/set".to_string(),
         params: Some(serde_json::json!({
-            "freeAccountMaxModel": "gpt-5.3-codex"
+            "freeAccountMaxModel": "gpt-5.6-luna"
         })),
         trace: None,
     };
@@ -2093,7 +2093,7 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
         set_result
             .get("freeAccountMaxModel")
             .and_then(|value| value.as_str()),
-        Some("gpt-5.3-codex")
+        Some("gpt-5.6-luna")
     );
 
     let get_server = codexmanager_service::start_one_shot_server().expect("start server");
@@ -2110,7 +2110,7 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
         get_result
             .get("freeAccountMaxModel")
             .and_then(|value| value.as_str()),
-        Some("gpt-5.3-codex")
+        Some("gpt-5.6-luna")
     );
 }
 
@@ -4328,7 +4328,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         "apikey/create",
         Some(serde_json::json!({
             "name": "Member key",
-            "modelSlug": "gpt-5.4-mini",
+            "modelSlug": "gpt-5.6-luna",
             "rotationStrategy": "account_rotation"
         })),
     );
@@ -4343,7 +4343,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
             key_id: Some(key_id.clone()),
             request_path: "/v1/responses".to_string(),
             method: "POST".to_string(),
-            model: Some("gpt-5.4-mini".to_string()),
+            model: Some("gpt-5.6-luna".to_string()),
             status_code: Some(200),
             created_at: codexmanager_core::storage::now_ts(),
             ..Default::default()
@@ -4353,7 +4353,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         &storage,
         Some(&key_id),
         unassigned_request_log_id,
-        "gpt-5.4-mini",
+        "gpt-5.6-luna",
         None,
         "actual",
         1,
@@ -4463,7 +4463,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
             key_id: Some(key_id.clone()),
             request_path: "/v1/responses".to_string(),
             method: "POST".to_string(),
-            model: Some("gpt-5.4-mini".to_string()),
+            model: Some("gpt-5.6-luna".to_string()),
             status_code: Some(200),
             created_at: codexmanager_core::storage::now_ts(),
             ..Default::default()
@@ -4473,7 +4473,7 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         &storage,
         Some(&key_id),
         request_log_id,
-        "gpt-5.4-mini",
+        "gpt-5.6-luna",
         None,
         "actual",
         333_333,
@@ -4484,14 +4484,14 @@ fn rpc_account_manager_assigns_key_and_bills_wallet() {
         true,
     )
     .expect("charge wallet");
-    assert_eq!(charge_snapshot.base_cost_microusd, 250_000);
-    assert_eq!(charge_snapshot.charged_cost_microusd, 375_000);
+    assert_eq!(charge_snapshot.base_cost_microusd, 133_334);
+    assert_eq!(charge_snapshot.charged_cost_microusd, 200_000);
     assert_eq!(charge_snapshot.rate_multiplier_millis, 1_500);
     let charged_wallet = storage
         .find_wallet_by_owner("user", &user_id)
         .expect("read wallet")
         .expect("wallet");
-    assert_eq!(charged_wallet.balance_credit_micros, 625_000);
+    assert_eq!(charged_wallet.balance_credit_micros, 800_000);
 
     let owners = call_rpc(205, "accountManager/apiKeyOwners/list", None);
     let owners = owners.as_array().expect("owners array");

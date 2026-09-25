@@ -5,6 +5,8 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-25
+
 ### Added
 
 - Added model catalog revision 9 with `gpt-6-sol`, `gpt-6-luna`, `gpt-image-2.5-sunburst`, and `gpt-image-2.5-flare`. A fresh catalog now contains 11 built-ins: 10 visible models and the hidden `codex-auto-review` entry.
@@ -14,6 +16,14 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 - Removed `gpt-5.4` and `gpt-5.4-mini`, which retired from Codex with ChatGPT sign-in on August 31, 2026, plus the `gpt-5.2` built-in deprecated for that sign-in path. General API-key access to `gpt-5.2` remains available through a custom model. Revision 9 deletes untouched built-ins and their default account-pool routes, while user-edited models, custom prices or tiers, non-default routes, and permission/API-key associations are preserved as custom models.
 - Rebuilt the Free account model ceiling choices from the current text-model catalog. Persisted values no longer eligible for that catalog, image-only values, and legacy fallbacks are normalized to `auto`; account warmup and account text tests now fall back to `gpt-6-luna`, while the observation bridge defaults to `gpt-6-sol` when no model is supplied.
 - Price sync still preserves custom prices when no models are selected; explicitly selected models may have their custom prices replaced by external prices, while unselected custom models remain untouched.
+- Bumped the release to `0.6.2` and synchronized the workspace, frontend, Tauri desktop metadata, and lockfiles.
+
+### Fixed
+
+- Fixed pnpm command resolution and the Next proxy startup race in desktop development; hidden pages now stop page-level polling and background work, while account-test and SSE listeners are cleaned up at terminal states.
+- Fixed resource lifetime, request cancellation, queue metrics, and concurrency edges across service, gateway, account, and usage paths, reducing legacy synchronous bridge work on production paths.
+- Hardened automatic migration of legacy SQLite model catalogs with a migration lock, online backup, preflight checks, case-conflicting slug handling, and a post-migration smoke check; failed migrations restore the backup before returning an error.
+- Added optional Docker OTA profiles to the GHCR Release Compose file; the default checker waits for user confirmation, while `ota-auto` updates labeled service/web images only after explicit opt-in, and pinned version tags remain fixed.
 
 ## [0.6.1] - 2026-09-24
 
@@ -564,7 +574,9 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 - The operation area of ​​the account management page is integrated into a single "Account Operation" drop-down menu, replacing the stack of multiple buttons on the right, making the interface more concise.
 
-[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.2
+[0.6.1]: https://github.com/qxcnm/Codex-Manager/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/qxcnm/Codex-Manager/releases/tag/v0.6.0
 [0.5.4]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/qxcnm/Codex-Manager/compare/v0.5.2...v0.5.3

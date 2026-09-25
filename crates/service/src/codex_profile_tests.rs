@@ -1488,6 +1488,10 @@ async fn direct_aggregate_profile_writes_upstream_provider_and_tracks_selection(
     );
     assert_eq!(status.provider_id, DIRECT_AGGREGATE_PROVIDER_ID);
     assert!(!status.supports_websockets);
+    assert!(
+        status.history_repair.is_none(),
+        "direct aggregate switching must not synchronously rewrite full history"
+    );
 
     let auth: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(dir.join(AUTH_FILE)).expect("read direct aggregate auth"),

@@ -699,6 +699,7 @@ fn error_summary(name: &str, url: &str, error: String) -> ModelPriceSourceSyncSu
     }
 }
 
+#[cfg(test)]
 fn build_update_plan(
     models: &[ManagedModelV2],
     index: &PriceIndex,

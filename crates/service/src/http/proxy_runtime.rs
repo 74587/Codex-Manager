@@ -612,6 +612,7 @@ async fn proxy_test_upload(
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn build_front_proxy_app(state: ProxyState) -> Router {
     build_front_proxy_app_with_limits(state, crate::http::middleware::RequestLimits::new(256, 64))
 }

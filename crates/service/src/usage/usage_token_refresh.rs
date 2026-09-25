@@ -300,6 +300,7 @@ fn is_refresh_race_recoverable_error(err: &str) -> bool {
 #[path = "usage_token_refresh_tests.rs"]
 mod tests;
 
+#[cfg(test)]
 pub(crate) fn refresh_and_persist_access_token(
     storage: &Storage,
     token: &mut Token,

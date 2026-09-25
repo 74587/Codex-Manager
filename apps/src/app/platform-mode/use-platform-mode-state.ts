@@ -152,7 +152,7 @@ export function usePlatformModePageState(
     return buildOpenAiGatewayEndpoint(origin);
   }, [browserOrigin, mode, serviceStatus.addr]);
 
-  const statusQuery = useCodexProfileModeStatus();
+  const statusQuery = useCodexProfileModeStatus({ enabled: isPageActive });
 
   const setReloadAfterSwitch = (enabled: boolean) => {
     reloadAfterSwitchMemoryValue = enabled;
@@ -169,7 +169,7 @@ export function usePlatformModePageState(
   const candidatesQuery = useQuery({
     queryKey: CODEX_PROFILE_CANDIDATES_QUERY_KEY,
     queryFn: () => codexProfileClient.listCandidates(),
-    enabled: isServiceReady,
+    enabled: isServiceReady && isPageActive,
     retry: 1,
     staleTime: 0,
     refetchInterval: isServiceReady && isPageActive ? 5_000 : false,

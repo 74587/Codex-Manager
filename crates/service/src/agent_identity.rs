@@ -223,6 +223,7 @@ where
     )
 }
 
+#[cfg(test)]
 fn resolve_account_agent_identity_authorization_with_validation<F, V>(
     storage: &Storage,
     account_id: &str,

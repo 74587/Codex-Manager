@@ -58,6 +58,8 @@ pub(crate) fn gateway_catalog_policy_for_rotation_strategy(
     }
 }
 
+// Legacy synchronous entry points are retained for desktop/Rhai callers; native routes await the async variants.
+#[allow(dead_code)]
 pub(crate) fn models_response_for_gateway_key(
     storage: &Storage,
     api_key_id: &str,
@@ -93,6 +95,7 @@ fn official_models_response_from_value(value: Value) -> Result<ModelsResponse, S
         .map_err(|err| format!("decode official Codex model cache failed: {err}"))
 }
 
+#[allow(dead_code)]
 pub(crate) fn write_gateway_model_catalog(
     storage: &Storage,
     api_key_id: &str,
@@ -107,6 +110,7 @@ pub(crate) fn write_gateway_model_catalog(
     ))?
 }
 
+#[allow(dead_code)]
 pub(crate) async fn write_gateway_model_catalog_async(
     storage: &Storage,
     api_key_id: &str,

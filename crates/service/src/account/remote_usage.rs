@@ -6,6 +6,8 @@ use std::ops::Deref;
 fn error(message: String) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure((), Some(message))
 }
+// Keep the full dual-backend adapter surface available for SeaORM runtime selection.
+#[allow(dead_code)]
 impl AccountStorage<'_> {
     pub(crate) fn latest_usage_snapshot(&self) -> rusqlite::Result<Option<UsageSnapshotRecord>> {
         if !seaorm_enabled() {
