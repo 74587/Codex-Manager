@@ -49,6 +49,13 @@ pub(crate) struct ManagedModelPriceSyncV2Result {
     pub updated_slugs: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedModelPriceSyncV2Params {
+    #[serde(default, alias = "model_slugs")]
+    pub model_slugs: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SourceProvider {
     #[serde(default)]
@@ -243,10 +250,21 @@ impl PriceIndex {
     }
 }
 
-pub(crate) async fn sync_prices() -> Result<ManagedModelPriceSyncV2Result, String> {
+pub(crate) async fn sync_prices(
+    params: ManagedModelPriceSyncV2Params,
+) -> Result<ManagedModelPriceSyncV2Result, String> {
     let _permit = PRICE_SYNC_PERMIT
         .try_acquire()
         .map_err(|_| "managed model price sync is already running".to_string())?;
+    let models = crate::runtime::blocking::run("model-price-sync-list", || super::list(true))
+        .await??
+        .items;
+    let allow_custom_override = params
+        .model_slugs
+        .iter()
+        .map(|slug| normalize_model(slug))
+        .any(|slug| !slug.is_empty());
+    let models = select_models_for_price_sync(&models, &params.model_slugs)?;
     let client = reqwest::Client::builder()
         .connect_timeout(SOURCE_CONNECT_TIMEOUT)
         .timeout(SOURCE_REQUEST_TIMEOUT)
@@ -262,15 +280,13 @@ pub(crate) async fn sync_prices() -> Result<ManagedModelPriceSyncV2Result, Strin
         load_source(&client, "models.dev", MODELS_DEV_PRICE_SOURCE_URL)
     );
     let (index, sources) = merge_source_results(primary, fallback)?;
-    let models = crate::runtime::blocking::run("model-price-sync-list", || super::list(true))
-        .await??
-        .items;
-    let (updates, mut result) = build_update_plan(&models, &index, sources);
+    let (updates, mut result) =
+        build_update_plan_with_options(&models, &index, sources, allow_custom_override);
     if updates.is_empty() {
         return Ok(result);
     }
     let applied = crate::runtime::blocking::run("model-price-sync-write", move || {
-        persist_price_updates(updates)
+        persist_price_updates(updates, allow_custom_override)
     })
     .await??;
     let planned = result.updated;
@@ -283,14 +299,51 @@ pub(crate) async fn sync_prices() -> Result<ManagedModelPriceSyncV2Result, Strin
     Ok(result)
 }
 
-fn persist_price_updates(updates: Vec<ManagedModelPriceV2Update>) -> Result<Vec<String>, String> {
+fn select_models_for_price_sync(
+    models: &[ManagedModelV2],
+    requested_slugs: &[String],
+) -> Result<Vec<ManagedModelV2>, String> {
+    let requested = requested_slugs
+        .iter()
+        .map(|slug| normalize_model(slug))
+        .filter(|slug| !slug.is_empty())
+        .collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Ok(models.to_vec());
+    }
+
+    let mut found = BTreeSet::new();
+    let selected = models
+        .iter()
+        .filter(|model| {
+            let normalized = normalize_model(&model.slug);
+            if requested.contains(&normalized) {
+                found.insert(normalized);
+                true
+            } else {
+                false
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing = requested.difference(&found).cloned().collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!("managed model not found: {}", missing.join(", ")));
+    }
+    Ok(selected)
+}
+
+fn persist_price_updates(
+    updates: Vec<ManagedModelPriceV2Update>,
+    allow_custom_override: bool,
+) -> Result<Vec<String>, String> {
     if crate::storage_helpers::seaorm_enabled() {
-        return super::seaorm::update_prices(updates);
+        return super::seaorm::update_prices(updates, allow_custom_override);
     }
     let storage =
         crate::storage_helpers::open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     storage
-        .update_managed_model_prices_v2(&updates)
+        .update_managed_model_prices_v2_with_custom_override(&updates, allow_custom_override)
         .map_err(|error| format!("update managed model prices failed: {error}"))
 }
 
@@ -654,6 +707,18 @@ fn build_update_plan(
     Vec<ManagedModelPriceV2Update>,
     ManagedModelPriceSyncV2Result,
 ) {
+    build_update_plan_with_options(models, index, sources, false)
+}
+
+fn build_update_plan_with_options(
+    models: &[ManagedModelV2],
+    index: &PriceIndex,
+    sources: Vec<ModelPriceSourceSyncSummary>,
+    allow_custom_override: bool,
+) -> (
+    Vec<ManagedModelPriceV2Update>,
+    ManagedModelPriceSyncV2Result,
+) {
     let all_sources_loaded = sources.len() == 2
         && sources
             .iter()
@@ -666,7 +731,7 @@ fn build_update_plan(
     };
     let mut updates = Vec::new();
     for model in models {
-        if model.price.price_status == "custom" {
+        if model.price.price_status == "custom" && !allow_custom_override {
             result.preserved_custom += 1;
             continue;
         }
@@ -674,6 +739,9 @@ fn build_update_plan(
             MatchResult::Found(record) => &index.records[record],
             MatchResult::Missing => {
                 result.unmatched += 1;
+                if model.price.price_status == "custom" {
+                    result.preserved_custom += 1;
+                }
                 if all_sources_loaded && is_external_estimated_price(model) {
                     updates.push(ManagedModelPriceV2Update {
                         slug: model.slug.clone(),
@@ -688,6 +756,9 @@ fn build_update_plan(
             }
             MatchResult::Ambiguous => {
                 result.ambiguous += 1;
+                if model.price.price_status == "custom" {
+                    result.preserved_custom += 1;
+                }
                 continue;
             }
         };
@@ -1118,6 +1189,68 @@ mod tests {
         assert_eq!(result.preserved_custom, 1);
     }
 
+    #[test]
+    fn price_sync_selection_defaults_to_all_and_rejects_unknown_slugs() {
+        let models = vec![
+            model("gpt-alpha", Some("openai"), "gpt-alpha"),
+            model("gpt-beta", Some("openai"), "gpt-beta"),
+        ];
+
+        let all = select_models_for_price_sync(&models, &[]).unwrap();
+        assert_eq!(all.len(), models.len());
+
+        let whitespace_only = select_models_for_price_sync(&models, &["  ".to_string()]).unwrap();
+        assert_eq!(whitespace_only.len(), models.len());
+
+        let selected = select_models_for_price_sync(
+            &models,
+            &[" GPT-BETA ".to_string(), "gpt-beta".to_string()],
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].slug, "gpt-beta");
+
+        let error = select_models_for_price_sync(&models, &["missing-model".to_string()])
+            .expect_err("unknown selected model must be rejected");
+        assert!(error.contains("missing-model"));
+    }
+
+    #[test]
+    fn selected_price_sync_only_scans_selected_models_and_overwrites_custom_price() {
+        let (index, sources) = parsed_sources();
+        let mut custom = model("gpt-alpha", Some("openai"), "gpt-alpha");
+        custom.price.price_status = "custom".to_string();
+        custom.price.price_source = Some("local".to_string());
+        let mut other = model("gpt-beta", Some("openai"), "gpt-beta");
+        other.price.price_status = "custom".to_string();
+        other.price.price_source = Some("local".to_string());
+        let models = vec![custom.clone(), other];
+
+        let selected = select_models_for_price_sync(&models, &["GPT-ALPHA".to_string()]).unwrap();
+        let (updates, result) = build_update_plan_with_options(&selected, &index, sources, true);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].slug, "gpt-alpha");
+        assert_eq!(updates[0].price.price_status, "estimated");
+        assert_eq!(result.scanned_models, 1);
+        assert_eq!(result.preserved_custom, 0);
+    }
+
+    #[test]
+    fn selected_price_sync_does_not_update_unselected_models() {
+        let (index, sources) = parsed_sources();
+        let selected = model("gpt-alpha", Some("openai"), "gpt-alpha");
+        let unselected = model("gpt-copy", Some("openai"), "gpt-alpha");
+        let models = vec![selected, unselected];
+
+        let selected = select_models_for_price_sync(&models, &["gpt-alpha".to_string()]).unwrap();
+        let (updates, result) = build_update_plan(&selected, &index, sources);
+
+        assert_eq!(result.scanned_models, 1);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].slug, "gpt-alpha");
+    }
+
     #[tokio::test]
     #[ignore = "requires live network access to external price catalogs"]
     async fn live_sources_parse_and_update_an_isolated_catalog() {
@@ -1138,11 +1271,14 @@ mod tests {
         let storage = Storage::open_in_memory().unwrap();
         storage.init().unwrap();
         let models = storage.list_managed_models_v2(true).unwrap();
-        let gpt_54 = models
+        let gpt_6_sol = models
             .iter()
-            .find(|candidate| candidate.slug == "gpt-5.4")
-            .expect("seeded gpt-5.4 model");
-        assert!(matches!(index.match_model(gpt_54), MatchResult::Found(_)));
+            .find(|candidate| candidate.slug == "gpt-6-sol")
+            .expect("seeded gpt-6-sol model");
+        assert!(matches!(
+            index.match_model(gpt_6_sol),
+            MatchResult::Found(_)
+        ));
 
         let (updates, result) = build_update_plan(&models, &index, sources);
         assert_eq!(result.scanned_models, models.len());
@@ -1193,7 +1329,7 @@ mod tests {
         let storage = Storage::open_in_memory().unwrap();
         storage.init().unwrap();
 
-        let mut custom = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        let mut custom = storage.get_managed_model_v2("gpt-6-sol").unwrap().unwrap();
         custom.price.price_status = "custom".to_string();
         custom.price.price_source = Some("local-ui".to_string());
         storage
@@ -1205,23 +1341,37 @@ mod tests {
 
         let applied = storage
             .update_managed_model_prices_v2(&[
-                estimated_update("gpt-5.4", 11),
-                estimated_update("gpt-5.2", 22),
+                estimated_update("gpt-6-sol", 11),
+                estimated_update("gpt-5.5", 22),
             ])
             .unwrap();
-        assert_eq!(applied, vec!["gpt-5.2"]);
-        let custom_after = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        assert_eq!(applied, vec!["gpt-5.5"]);
+        let custom_after = storage.get_managed_model_v2("gpt-6-sol").unwrap().unwrap();
         assert_eq!(custom_after.price.price_source.as_deref(), Some("local-ui"));
         assert_eq!(custom_after.price_tiers, custom.price_tiers);
 
-        let before = storage.get_managed_model_v2("gpt-5.2").unwrap().unwrap();
+        let forced = estimated_update("gpt-6-sol", 12);
+        assert_eq!(
+            storage
+                .update_managed_model_prices_v2_with_custom_override(
+                    std::slice::from_ref(&forced),
+                    true,
+                )
+                .unwrap(),
+            vec!["gpt-6-sol"]
+        );
+        let forced_after = storage.get_managed_model_v2("gpt-6-sol").unwrap().unwrap();
+        assert_eq!(forced_after.price, forced.price);
+        assert_eq!(forced_after.price_tiers, forced.price_tiers);
+
+        let before = storage.get_managed_model_v2("gpt-5.5").unwrap().unwrap();
         assert!(storage
             .update_managed_model_prices_v2(&[
-                estimated_update("gpt-5.2", 33),
+                estimated_update("gpt-5.5", 33),
                 estimated_update("missing-model", 44),
             ])
             .is_err());
-        let after = storage.get_managed_model_v2("gpt-5.2").unwrap().unwrap();
+        let after = storage.get_managed_model_v2("gpt-5.5").unwrap().unwrap();
         assert_eq!(after.price, before.price);
         assert_eq!(after.price_tiers, before.price_tiers);
 
@@ -1244,7 +1394,7 @@ mod tests {
                 group_id,
                 &[ModelGroupModel {
                     group_id: group_id.to_string(),
-                    platform_model_slug: "gpt-5.2".to_string(),
+                    platform_model_slug: "gpt-5.5".to_string(),
                     enabled: true,
                     rate_multiplier_millis: None,
                     billing_model_slug: None,
@@ -1254,18 +1404,18 @@ mod tests {
                 }],
             )
             .unwrap();
-        let permission_before = storage.get_managed_model_v2("gpt-5.2").unwrap().unwrap();
+        let permission_before = storage.get_managed_model_v2("gpt-5.5").unwrap().unwrap();
         assert!(permission_before
             .permission_group_ids
             .contains(&group_id.to_string()));
         let error = storage
             .update_managed_model_prices_v2(&[
-                missing_update("gpt-5.2"),
+                missing_update("gpt-5.5"),
                 estimated_update("missing-model", 55),
             ])
             .expect_err("late failure must restore the price and group membership");
         assert!(error.to_string().contains("model_not_found"));
-        let permission_after = storage.get_managed_model_v2("gpt-5.2").unwrap().unwrap();
+        let permission_after = storage.get_managed_model_v2("gpt-5.5").unwrap().unwrap();
         assert_eq!(permission_after.price, permission_before.price);
         assert_eq!(permission_after.price_tiers, permission_before.price_tiers);
         assert!(permission_after
@@ -1274,11 +1424,11 @@ mod tests {
 
         assert_eq!(
             storage
-                .update_managed_model_prices_v2(&[missing_update("gpt-5.2")])
+                .update_managed_model_prices_v2(&[missing_update("gpt-5.5")])
                 .unwrap(),
-            vec!["gpt-5.2"]
+            vec!["gpt-5.5"]
         );
-        let invalidated = storage.get_managed_model_v2("gpt-5.2").unwrap().unwrap();
+        let invalidated = storage.get_managed_model_v2("gpt-5.5").unwrap().unwrap();
         assert_eq!(invalidated.price.price_status, "missing");
         assert!(invalidated.price.price_source.is_none());
         assert!(invalidated.price.input_microusd_per_1m.is_none());

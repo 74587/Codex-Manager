@@ -90,7 +90,7 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         "Codex 图片主模型",
         ENV_OVERRIDE_SCOPE_SERVICE,
         ENV_OVERRIDE_APPLY_MODE_RUNTIME,
-        "gpt-5.4-mini",
+        "gpt-6-luna",
     ),
     EnvOverrideCatalogItem::new(
         "CODEXMANAGER_CODEX_IMAGE_TOOL_MODEL",

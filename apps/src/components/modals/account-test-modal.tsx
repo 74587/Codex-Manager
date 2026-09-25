@@ -53,12 +53,20 @@ interface Accumulated {
 }
 
 type Phase = "idle" | "running" | "done";
+const DEFAULT_ACCOUNT_TEST_MODEL = "gpt-6-luna";
 
 function isImageModel(model: ManagedModelV2): boolean {
   const caps = (model.capabilities ?? {}) as Record<string, unknown>;
+  const outputModalities = [caps.output_modalities, caps.outputModalities].flatMap(
+    (value) => (Array.isArray(value) ? value : []),
+  );
   return (
     caps.supports_image_generation === true ||
-    caps.supportsImageGeneration === true
+    caps.supportsImageGeneration === true ||
+    outputModalities.some(
+      (modality) =>
+        typeof modality === "string" && modality.trim().toLowerCase() === "image",
+    )
   );
 }
 
@@ -304,7 +312,14 @@ export function AccountTestModal({
         const enabled = result.items.filter((model) => model.enabled);
         setModels(enabled);
         const textModel = enabled.find((model) => !isImageModel(model));
-        setSelectedModel((textModel ?? enabled[0])?.slug ?? null);
+        const preferredTextModel = enabled.find(
+          (model) =>
+            model.slug.toLowerCase() === DEFAULT_ACCOUNT_TEST_MODEL &&
+            !isImageModel(model),
+        );
+        setSelectedModel(
+          (preferredTextModel ?? textModel ?? enabled[0])?.slug ?? null,
+        );
       } catch {
         // 模型列表加载失败不阻塞测试，后端会用默认文字模型兜底。
       }
@@ -379,8 +394,7 @@ export function AccountTestModal({
               onValueChange={(value) => {
                 const slug = value ? String(value) : null;
                 setSelectedModel(slug);
-                // 让测试类型跟随所选模型能力，避免「文字直连 + 图片专用模型」把
-                // gpt-image-2 当主模型直连、被上游判为不支持。
+                // 让测试类型跟随所选模型能力，避免将图片专用模型作为文字主模型直连。
                 const model = models.find((item) => item.slug === slug);
                 if (model) {
                   setTestKind(isImageModel(model) ? "image" : "text");

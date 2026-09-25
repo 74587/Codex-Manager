@@ -460,7 +460,8 @@ export function useManagedModels() {
   });
 
   const priceSyncMutation = useMutation({
-    mutationFn: () => managedModelsV2Client.syncPrices(serviceAddr),
+    mutationFn: (modelSlugs: string[]) =>
+      managedModelsV2Client.syncPrices(modelSlugs, serviceAddr),
     onSuccess: async (result) => {
       let refreshError: unknown = null;
       try {
@@ -551,10 +552,13 @@ export function useManagedModels() {
         return null;
       }
     },
-    syncPrices: async () => {
+    syncPrices: async (modelSlugs: string[] = []) => {
       if (!ensureServiceReady("同步价格")) return null;
       try {
-        return await priceSyncMutation.mutateAsync();
+        const normalizedSlugs = Array.from(
+          new Set(modelSlugs.map((slug) => slug.trim()).filter(Boolean)),
+        );
+        return await priceSyncMutation.mutateAsync(normalizedSlugs);
       } catch {
         return null;
       }

@@ -40,6 +40,17 @@ pub(crate) fn is_async_method(method: &str) -> bool {
     )
 }
 
+fn parse_managed_model_price_sync_params(
+    req: &JsonRpcRequest,
+) -> Result<crate::models_v2::ManagedModelPriceSyncV2Params, String> {
+    let params = req.params.clone().unwrap_or_else(|| serde_json::json!({}));
+    if params.is_null() {
+        return Ok(crate::models_v2::ManagedModelPriceSyncV2Params::default());
+    }
+    serde_json::from_value::<crate::models_v2::ManagedModelPriceSyncV2Params>(params)
+        .map_err(|error| format!("parse managed model price sync payload failed: {error}"))
+}
+
 /// The HTTP boundary authenticates the RPC token first. Keep actor authorization
 /// here, before any async domain can contact a provider or mutate local state.
 pub(crate) async fn try_handle_network_request_async(
@@ -61,7 +72,10 @@ pub(crate) async fn try_handle_network_request_async(
         return Some(JsonRpcMessage::Response(super::response(req, result)));
     }
     if req.method == "apikey/managedModelPriceSyncV2" {
-        let result = super::value_or_error(crate::models_v2::sync_prices().await);
+        let result = super::value_or_error(match parse_managed_model_price_sync_params(req) {
+            Ok(params) => crate::models_v2::sync_prices(params).await,
+            Err(error) => Err(error),
+        });
         return Some(JsonRpcMessage::Response(super::response(req, result)));
     }
     if let Some(message) = super::auth_async::try_handle_auth_request_async(req, actor).await {
@@ -99,6 +113,56 @@ pub(crate) async fn try_handle_network_request_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn price_sync_request(params: Option<serde_json::Value>) -> JsonRpcRequest {
+        JsonRpcRequest {
+            id: 1.into(),
+            method: "apikey/managedModelPriceSyncV2".into(),
+            params,
+            trace: None,
+        }
+    }
+
+    #[test]
+    fn managed_model_price_sync_params_default_to_all_models() {
+        assert!(
+            parse_managed_model_price_sync_params(&price_sync_request(None))
+                .unwrap()
+                .model_slugs
+                .is_empty()
+        );
+        assert!(
+            parse_managed_model_price_sync_params(&price_sync_request(Some(
+                serde_json::Value::Null,
+            )))
+            .unwrap()
+            .model_slugs
+            .is_empty()
+        );
+        assert!(
+            parse_managed_model_price_sync_params(&price_sync_request(
+                Some(serde_json::json!({}),)
+            ))
+            .unwrap()
+            .model_slugs
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn managed_model_price_sync_params_parse_selected_slugs_and_reject_invalid_shape() {
+        let parsed = parse_managed_model_price_sync_params(&price_sync_request(Some(
+            serde_json::json!({"modelSlugs": ["gpt-6-sol", "gpt-6-luna"]}),
+        )))
+        .unwrap();
+        assert_eq!(parsed.model_slugs, ["gpt-6-sol", "gpt-6-luna"]);
+
+        let error = parse_managed_model_price_sync_params(&price_sync_request(Some(
+            serde_json::json!({"modelSlugs": "gpt-6-sol"}),
+        )))
+        .expect_err("non-array modelSlugs must be rejected");
+        assert!(error.contains("parse managed model price sync payload failed"));
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn network_methods_preserve_member_denials_before_side_effects() {

@@ -5,6 +5,16 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 
 ## [Unreleased]
 
+### Added
+
+- Added model catalog revision 9 with `gpt-6-sol`, `gpt-6-luna`, `gpt-image-2.5-sunburst`, and `gpt-image-2.5-flare`. A fresh catalog now contains 11 built-ins: 10 visible models and the hidden `codex-auto-review` entry.
+
+### Changed
+
+- Removed `gpt-5.4` and `gpt-5.4-mini`, which retired from Codex with ChatGPT sign-in on August 31, 2026, plus the `gpt-5.2` built-in deprecated for that sign-in path. General API-key access to `gpt-5.2` remains available through a custom model. Revision 9 deletes untouched built-ins and their default account-pool routes, while user-edited models, custom prices or tiers, non-default routes, and permission/API-key associations are preserved as custom models.
+- Rebuilt the Free account model ceiling choices from the current text-model catalog. Persisted values no longer eligible for that catalog, image-only values, and legacy fallbacks are normalized to `auto`; account warmup and account text tests now fall back to `gpt-6-luna`, while the observation bridge defaults to `gpt-6-sol` when no model is supplied.
+- Price sync still preserves custom prices when no models are selected; explicitly selected models may have their custom prices replaced by external prices, while unselected custom models remain untouched.
+
 ## [0.6.1] - 2026-09-24
 
 ### Added
@@ -15,7 +25,7 @@ It follows Keep a Changelog with a lightweight adaptation for this repository.
 ### Changed
 
 - Completed the production hardening for the asynchronous service and SeaORM storage migration, including transaction, shutdown, and acceptance gates across remote accounts, aggregate APIs, API keys, usage, logs, and gateway paths.
-- Unified model status-card styling. Applying models now applies the full catalog when nothing is selected, limits the operation to selected models otherwise, and synchronizes pricing and catalog metadata.
+- Unified model status-card styling. Applying models uses the full catalog when nothing is selected, limits the operation to selected models otherwise, and synchronizes pricing and catalog metadata.
 - Model deletion now removes records. Deleted built-in models receive a tombstone so startup seeding does not restore them.
 - Bumped the workspace, frontend, Tauri desktop metadata, and lockfiles to `0.6.1`.
 

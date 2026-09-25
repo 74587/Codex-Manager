@@ -35,7 +35,7 @@ pub(crate) use async_events::{
 const DEFAULT_TEXT_TEST_PROMPT: &str = "hi";
 const DEFAULT_IMAGE_TEST_PROMPT: &str =
     "Generate a cute orange cat astronaut sticker on a clean pastel background.";
-const DEFAULT_TEXT_TEST_MODEL: &str = "gpt-5.3-codex";
+const DEFAULT_TEXT_TEST_MODEL: &str = "gpt-6-luna";
 const DEFAULT_IMAGE_TEST_MODEL: &str = "gpt-image-2";
 const ACCOUNT_TEST_OVERALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -1249,6 +1249,11 @@ mod tests {
         assert_eq!(TestKind::parse(Some("text")), TestKind::Text);
         assert_eq!(TestKind::parse(Some("")), TestKind::Text);
         assert_eq!(TestKind::parse(None), TestKind::Text);
+    }
+
+    #[test]
+    fn default_text_test_model_uses_current_frontier_model() {
+        assert_eq!(DEFAULT_TEXT_TEST_MODEL, "gpt-6-luna");
     }
 
     #[test]

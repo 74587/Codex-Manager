@@ -103,7 +103,7 @@ fn list_aggregate_apis_reads_model_assignments_from_v2_routes_only() {
     api.user_agent = Some("Aggregate-Listed/1.0".to_string());
     storage.insert_aggregate_api(&api).expect("insert api");
     let mut model = storage
-        .get_managed_model_v2("gpt-5.4")
+        .get_managed_model_v2("gpt-6-sol")
         .expect("read V2 model")
         .expect("seeded model");
     model.routes.extend([
@@ -136,7 +136,7 @@ fn list_aggregate_apis_reads_model_assignments_from_v2_routes_only() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "agg-listed");
     assert_eq!(items[0].user_agent.as_deref(), Some("Aggregate-Listed/1.0"));
-    assert_eq!(items[0].model_slugs, vec!["gpt-5.4".to_string()]);
+    assert_eq!(items[0].model_slugs, vec!["gpt-6-sol".to_string()]);
 }
 
 #[test]

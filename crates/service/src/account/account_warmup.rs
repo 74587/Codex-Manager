@@ -18,7 +18,7 @@ use crate::usage_token_refresh::{
 const DEFAULT_WARMUP_MESSAGE: &str = "hi";
 const FALLBACK_WARMUP_MESSAGE: &str = "你好";
 pub(crate) const WARMUP_UPSTREAM_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const DEFAULT_WARMUP_MODEL: &str = "gpt-5.3-codex";
+const DEFAULT_WARMUP_MODEL: &str = "gpt-6-luna";
 const RESET_WARMUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const X_OPENAI_FEDRAMP_HEADER_NAME: &str = "x-openai-fedramp";
 

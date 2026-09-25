@@ -319,7 +319,7 @@ fn test_managed_model(storage: &Storage, slug: &str) -> codexmanager_core::stora
         return model;
     }
     let mut model = storage
-        .get_managed_model_v2("gpt-5.4-mini")
+        .get_managed_model_v2("gpt-6-luna")
         .expect("get V2 test model template")
         .expect("seeded V2 test model template");
     model.id.clear();

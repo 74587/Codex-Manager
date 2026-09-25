@@ -184,6 +184,13 @@ impl SeaOrmStorage {
             .await
             .map_err(|_| StorageError::Migration)
     }
+
+    /// Reconcile the built-in catalog after schema migration for a live service database.
+    pub async fn reconcile_builtin_model_catalog(&self) -> Result<(), StorageError> {
+        model_catalog::reconcile_builtin_catalog(&self.connection)
+            .await
+            .map_err(|_| StorageError::Migration)
+    }
     pub async fn health_check(&self) -> Result<StorageHealth, StorageError> {
         self.connection
             .execute(Statement::from_string(

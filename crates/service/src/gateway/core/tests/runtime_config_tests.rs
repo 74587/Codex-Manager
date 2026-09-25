@@ -152,7 +152,7 @@ fn reload_from_env_updates_timeout_and_proxy() {
     let _strict_allowlist_guard = EnvGuard::set(ENV_STRICT_REQUEST_PARAM_ALLOWLIST, "0");
     let _request_compression_guard = EnvGuard::set(ENV_ENABLE_REQUEST_COMPRESSION, "0");
     let _image_enabled_guard = EnvGuard::set(ENV_CODEX_IMAGE_GENERATION_ENABLED, "0");
-    let _image_main_model_guard = EnvGuard::set(ENV_CODEX_IMAGE_MAIN_MODEL, "gpt-5.4");
+    let _image_main_model_guard = EnvGuard::set(ENV_CODEX_IMAGE_MAIN_MODEL, "gpt-6-sol");
     let _image_tool_model_guard = EnvGuard::set(ENV_CODEX_IMAGE_TOOL_MODEL, "gpt-image-2");
     let _client_id_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_CLIENT_ID, "client-id-123");
     let _issuer_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_ISSUER, "https://issuer.example");
@@ -166,7 +166,7 @@ fn reload_from_env_updates_timeout_and_proxy() {
     assert!(!strict_request_param_allowlist_enabled());
     assert!(!request_compression_enabled());
     assert!(!codex_image_generation_enabled());
-    assert_eq!(current_codex_image_main_model(), "gpt-5.4");
+    assert_eq!(current_codex_image_main_model(), "gpt-6-sol");
     assert_eq!(current_codex_image_tool_model(), "gpt-image-2");
     assert_eq!(token_exchange_client_id(), "client-id-123");
     assert_eq!(
@@ -215,7 +215,7 @@ fn reload_from_env_defaults_keep_request_gate_legacy_unbounded() {
     );
     assert!(request_compression_enabled());
     assert!(codex_image_generation_enabled());
-    assert_eq!(current_codex_image_main_model(), "gpt-5.4-mini");
+    assert_eq!(current_codex_image_main_model(), "gpt-6-luna");
     assert_eq!(current_codex_image_tool_model(), "gpt-image-2");
 }
 
@@ -1296,7 +1296,7 @@ fn set_upstream_total_timeout_ms_updates_env_and_cache() {
     );
 }
 
-/// 函数 `normalize_model_slug_maps_legacy_gpt_5_4_pro_to_gpt_5_4`
+/// 函数 `normalize_model_slug_maps_obsolete_models_to_auto`
 ///
 /// 作者: gaohongshun
 ///
@@ -1308,12 +1308,30 @@ fn set_upstream_total_timeout_ms_updates_env_and_cache() {
 /// # 返回
 /// 无
 #[test]
-fn normalize_model_slug_maps_legacy_gpt_5_4_pro_to_gpt_5_4() {
+fn normalize_model_slug_maps_obsolete_models_to_auto() {
     let _guard = crate::test_env_guard();
 
-    let actual = normalize_model_slug("gpt-5.4-pro").expect("normalize model");
-
-    assert_eq!(actual, "gpt-5.4");
+    for model in [
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-5-codex-mini",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-pro",
+    ] {
+        assert_eq!(
+            normalize_model_slug(model).expect("normalize obsolete model"),
+            "auto",
+            "{model} should no longer constrain free accounts"
+        );
+    }
 }
 
 /// 函数 `normalize_model_slug_accepts_auto`

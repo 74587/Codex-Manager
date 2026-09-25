@@ -161,7 +161,9 @@ impl ChatCompletionsFromResponsesSseReader {
     }
 
     fn chat_model(&self) -> String {
-        self.model.clone().unwrap_or_else(|| "gpt-5.4".to_string())
+        self.model
+            .clone()
+            .unwrap_or_else(|| super::super::DEFAULT_BRIDGE_MODEL.to_string())
     }
 
     fn chat_created(&self) -> i64 {

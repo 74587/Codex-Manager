@@ -198,6 +198,9 @@ If this project has helped you, donations are welcome!
 - Account authorization: `chatgpt.com` browser OAuth and Device Code login; browser OAuth also supports manually pasting the callback URL.
 - Platform keys: random or custom fixed keys, disabling, deletion, model binding, reasoning tier, and service tier (follow request / Standard / Fast / Ultrafast / Flex). Keys can be bound to custom account groups and intersected with plan filters so rotation stays inside the authorized pool.
 - Model management: Model Catalog V2 is the sole runtime source of truth. It supports builtin/custom models, integer three-tier and long-context pricing, account-pool and aggregate-API routes, instructions policy, local JSON preview/commit, and proactive Codex cache export from desktop and Web.
+- The current catalog contains 11 built-in rows. `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, the three GPT-5.6 models, `gpt-5.5`, `gpt-image-2`, and the two Image 2.5 variants make up the 10 models visible by default; only `codex-auto-review` is hidden.
+- Image 2.5 official pricing separates text and image input rates, while the current V2 billing snapshot has one input/cached-input bucket. Both Image 2.5 variants therefore keep their official pricing source but ship with `price_status=missing` and no tiers: they remain routable outside wallet billing, and wallet charging fails with `model_price_missing` instead of applying an inaccurate unified rate.
+- `gpt-5.4` and `gpt-5.4-mini` retired from Codex with ChatGPT sign-in on August 31, 2026, and `gpt-5.2` is also deprecated for that sign-in path; the general API model is not removed by this cleanup. Revision 9 removes their untouched built-ins, while user edits, price tiers, non-default routes, and permission/API-key associations are preserved as custom models. API-key users can also add the same slugs explicitly as custom models.
 - Aggregate API: manage minimal third-party upstreams, including create, edit, balance, and connectivity tests against configured V2 routes. It does not auto-discover provider models; administrators fetch and selectively link models to Catalog V2.
 - Plugin center: `/plugins/` supports built-in curated, enterprise private, and custom source marketplace modes, plus manifests, tasks, logs, and Rhai interfaces.
 - Skills and plugins: `/skills/` separates Skills Installation from Codex Plugin Installation. It supports GitHub repositories, skills.sh search, ZIP/directory import, installed-item management, and the native Marketplace plugin flow; `.system` Skills remain read-only.
@@ -206,7 +209,7 @@ If this project has helped you, donations are welcome!
 - System internal interface inventory: all desktop/service commands, RPC methods, and built-in plugin functions.
 - Local service: automatic startup with configurable port and listen address.
 - Local gateway: one OpenAI-compatible endpoint for Codex CLI, Gemini CLI, Claude Code, and third-party tools; supports Gemini to `/v1/responses`, SSE, tools, MCP, skills, and request/stream timeouts.
-- Image generation: injects the official Codex `image_generation` tool for `/v1/responses` by default and provides `/v1/images/generations` and `/v1/images/edits`; the default model is `gpt-image-2`.
+- Image generation: injects the official Codex `image_generation` tool for `/v1/responses` by default and provides `/v1/images/generations` and `/v1/images/edits`; the Images API compatibility main model defaults to `gpt-6-luna`, while the injected image tool remains `gpt-image-2` and the two Image 2.5 variants are available for explicit selection.
 
 ## Screenshots
 

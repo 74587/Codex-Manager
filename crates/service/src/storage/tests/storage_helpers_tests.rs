@@ -114,6 +114,16 @@ fn pending_model_catalog_data_migration_requires_backup() {
         ["114_model_catalog_gpt56_prices"],
     )
     .expect("mark GPT-5.6 pricing migration complete");
+
+    assert!(
+        model_catalog_v2_migration_needed(std::path::Path::new(&db_path))
+            .expect("inspect pending revision 9 catalog migration")
+    );
+    conn.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,4)",
+        ["137_model_catalog_revision9"],
+    )
+    .expect("mark revision 9 catalog migration complete");
     drop(conn);
 
     assert!(

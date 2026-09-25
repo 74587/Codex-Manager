@@ -1,6 +1,29 @@
 use std::io;
 use std::thread;
 
+pub(crate) async fn reconcile_active_gateway_profile_after_startup_async() {
+    let Some(storage) = crate::storage_helpers::open_storage() else {
+        log::warn!("event=startup_gateway_profile_reconciliation_failed error=storage unavailable");
+        return;
+    };
+    if let Err(err) =
+        crate::codex_profile::sync_active_gateway_profile_from_storage_async(&storage).await
+    {
+        log::warn!("event=startup_gateway_profile_reconciliation_failed error={err}");
+    }
+}
+
+pub(crate) fn reconcile_active_gateway_profile_after_startup() {
+    match crate::process_runtime() {
+        Ok(runtime) => {
+            runtime.spawn(reconcile_active_gateway_profile_after_startup_async());
+        }
+        Err(err) => log::warn!(
+            "event=startup_gateway_profile_reconciliation_failed error=runtime unavailable: {err}"
+        ),
+    }
+}
+
 pub struct ServerHandle {
     pub addr: String,
     join: thread::JoinHandle<()>,
@@ -40,6 +63,7 @@ pub fn start_one_shot_server() -> std::io::Result<ServerHandle> {
     crate::storage_helpers::initialize_storage()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     crate::sync_runtime_settings_from_storage();
+    reconcile_active_gateway_profile_after_startup();
     // Integration tests use exactly the production Axum router, including its
     // authentication, body limits, streaming adapters and cancellation paths.
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -101,6 +125,7 @@ pub fn start_server(addr: &str) -> std::io::Result<()> {
     crate::storage_helpers::initialize_storage()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     crate::sync_runtime_settings_from_storage();
+    reconcile_active_gateway_profile_after_startup();
     crate::app_settings::ensure_codex_latest_version_sync();
     crate::usage_refresh::ensure_usage_polling();
     crate::usage_refresh::ensure_gateway_keepalive();

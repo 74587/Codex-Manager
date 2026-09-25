@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- 模型目录 revision 9 新增 `gpt-6-sol`、`gpt-6-luna`、`gpt-image-2.5-sunburst` 和 `gpt-image-2.5-flare`；fresh 目录现在包含 11 个 builtin，其中 10 个默认可见，`codex-auto-review` 保持隐藏。
+
+### Changed
+
+- 从 builtin 目录移除已于 2026-08-31 从 ChatGPT 登录的 Codex 退役的 `gpt-5.4`、`gpt-5.4-mini`，以及在该登录方式下 deprecated 的 `gpt-5.2`；通用 API Key 仍可通过 custom 模型使用 `gpt-5.2`。revision 9 会删除未定制 builtin 及其默认账号池 route；用户编辑、自定义价格或 tiers、非默认 routes 与 permission/API Key 关联会转为 custom 保留。
+- free-account 模型上限选项改为基于当前文本模型目录生成；已持久化但不再属于当前候选目录、图片专用或旧 fallback 的值统一归一化为 `auto`。账号预热和账号文本测试的 fallback 改为 `gpt-6-luna`，观测桥接的缺省模型改为 `gpt-6-sol`。
+- 价格同步继续在未勾选时保护自定义价格；明确勾选模型后，允许外部价格覆盖所选模型的自定义价格，未选中的自定义模型不会被触碰。
+
 ## [0.6.1] - 2026-09-24
 
 ### Added
@@ -15,7 +25,7 @@
 ### Changed
 
 - 完成服务端异步化与 SeaORM 存储迁移的生产收尾，补齐远程账号、聚合 API、API Key、用量、日志与网关路径的事务、关闭和生产验收门禁。
-- 模型管理页统一状态卡样式；“应用模型”未勾选时默认应用全部模型，勾选后仅应用所选模型，并同步模型价格与目录元数据。
+- 模型管理页统一状态卡样式；“应用模型”未勾选时默认应用完整目录，勾选后仅应用所选模型，并同步模型价格与目录元数据。
 - 模型删除改为实际删除；内置模型删除后记录墓碑，后续启动或补种不会自动恢复。
 - 发布版本提升到 `0.6.1`，同步 workspace、前端、Tauri 桌面端和锁文件。
 

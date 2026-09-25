@@ -244,6 +244,24 @@ pub(crate) async fn exercise(db: &DatabaseConnection) {
         tiers
     );
 
+    let forced_update = estimated_price_update(&model.slug, 151);
+    assert_eq!(
+        ManagedModelsRepository::update_prices_with_custom_override(
+            db,
+            std::slice::from_ref(&forced_update),
+            true,
+        )
+        .await
+        .expect("explicitly selected custom price can be overwritten"),
+        vec![model.slug.clone()]
+    );
+    let forced = ManagedModelsRepository::get(db, &model.slug)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(forced.price, forced_update.price);
+    assert_eq!(forced.price_tiers, forced_update.price_tiers);
+
     let mut estimated_seed = price.clone();
     estimated_seed.price.price_status = "estimated".into();
     estimated_seed.price.price_source = Some("old-fixture".into());

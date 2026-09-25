@@ -411,9 +411,16 @@ test("createWebCommandMap 为模型目录 V2 原子命令提供 Web RPC 映射",
   assert.deepEqual(commandMap.service_managed_model_delete_v2, {
     rpcMethod: "apikey/managedModelDeleteV2",
   });
-  assert.deepEqual(commandMap.service_managed_model_price_sync_v2, {
-    rpcMethod: "apikey/managedModelPriceSyncV2",
-  });
+  const priceSync = commandMap.service_managed_model_price_sync_v2;
+  assert.equal(priceSync.rpcMethod, "apikey/managedModelPriceSyncV2");
+  assert.ok(priceSync.mapParams);
+  assert.deepEqual(
+    priceSync.mapParams({
+      addr: "localhost:48760",
+      payload: { modelSlugs: ["gpt-6-sol", "gpt-6-luna"] },
+    }),
+    { modelSlugs: ["gpt-6-sol", "gpt-6-luna"] },
+  );
 
   const upsert = commandMap.service_managed_model_upsert_v2;
   assert.equal(upsert.rpcMethod, "apikey/managedModelUpsertV2");

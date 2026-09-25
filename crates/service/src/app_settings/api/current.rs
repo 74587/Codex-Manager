@@ -49,18 +49,13 @@ use super::{
 
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL_OPTIONS: &[&str] = &[
     "auto",
-    "gpt-5",
-    "gpt-5-codex",
-    "gpt-5-codex-mini",
-    "gpt-5.1",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2",
-    "gpt-5.2-codex",
-    "gpt-5.3-codex",
-    "gpt-5.4-mini",
-    "gpt-5.4",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
 ];
 
 /// 函数 `normalize_service_bind_mode_value`
@@ -577,7 +572,10 @@ fn collect_free_account_max_model_options(current: &str, cached: &[String]) -> V
 /// 返回函数执行结果
 fn is_free_account_max_model_option(slug: &str) -> bool {
     let normalized = slug.trim().to_ascii_lowercase();
-    !normalized.is_empty() && normalized.starts_with("gpt-") && normalized != "gpt-5.4-pro"
+    !normalized.is_empty()
+        && normalized.starts_with("gpt-")
+        && normalized != "gpt-5.4-pro"
+        && !crate::gateway::is_obsolete_free_account_max_model(&normalized)
 }
 
 /// 函数 `persist_current_snapshot`

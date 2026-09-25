@@ -78,13 +78,27 @@ const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_ZSTD_MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "auto";
+const OBSOLETE_FREE_ACCOUNT_MAX_MODELS: &[&str] = &[
+    "gpt-5",
+    "gpt-5-codex",
+    "gpt-5-codex-mini",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+];
 const DEFAULT_COMPACT_MODEL: &str = "auto";
 const DEFAULT_COMPACT_API_PATH: &str = "/v1/responses/compact";
 const DEFAULT_MODEL_FORWARD_RULES: &str = "";
 const DEFAULT_COMPACT_MODEL_FORWARD_RULES: &str = "";
-const DEFAULT_CODEX_IMAGE_MAIN_MODEL: &str = "gpt-5.4-mini";
+const DEFAULT_CODEX_IMAGE_MAIN_MODEL: &str = "gpt-6-luna";
 const DEFAULT_CODEX_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
-const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.153.0";
+const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.155.0";
 const MAX_GATEWAY_USER_AGENT_BYTES: usize = 512;
 const MAX_UPSTREAM_PROXY_POOL_SIZE: usize = 5;
 const MAX_CANDIDATE_CLIENT_CACHE_ENTRIES: usize = 512;
@@ -2531,7 +2545,16 @@ fn normalize_model_forward_lookup_model(raw: &str) -> Option<String> {
 /// # 返回
 /// 返回函数执行结果
 fn normalize_model_slug(raw: &str) -> Result<String, String> {
-    normalize_model_slug_with_error(raw, "freeAccountMaxModel")
+    let normalized = normalize_model_slug_with_error(raw, "freeAccountMaxModel")?;
+    if is_obsolete_free_account_max_model(&normalized) {
+        return Ok(DEFAULT_FREE_ACCOUNT_MAX_MODEL.to_string());
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn is_obsolete_free_account_max_model(raw: &str) -> bool {
+    let normalized = raw.trim().to_ascii_lowercase();
+    OBSOLETE_FREE_ACCOUNT_MAX_MODELS.contains(&normalized.as_str())
 }
 
 fn normalize_model_slug_with_error(raw: &str, field_name: &str) -> Result<String, String> {

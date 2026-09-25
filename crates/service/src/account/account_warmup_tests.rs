@@ -227,7 +227,7 @@ fn resolve_warmup_model_slug_falls_back_when_catalog_missing() {
     disable_seed_models(&storage);
     assert_eq!(
         resolve_warmup_model_slug_with_ceiling(&storage, &target, "auto").unwrap(),
-        DEFAULT_WARMUP_MODEL
+        "gpt-6-luna"
     );
 }
 

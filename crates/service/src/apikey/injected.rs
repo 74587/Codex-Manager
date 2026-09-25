@@ -39,10 +39,13 @@ async fn text_model(storage: &dyn DomainStorage, slug: Option<&str>) -> Result<(
         return Ok(());
     };
     let Some(model) = storage.model(slug.to_owned()).await? else {
-        // This built-in image model is intentionally rejected even when a
-        // fresh SeaORM catalog has not yet materialized its seed row.
-        if slug.eq_ignore_ascii_case("gpt-image-2") {
-            return Err("图片专用模型不能作为文本主模型(image-only model cannot be used as a text-generation primary model): gpt-image-2".into());
+        // Keep the guard useful while a fresh SeaORM catalog is still
+        // materializing built-in rows. Unknown external slugs remain allowed.
+        let normalized_slug = slug.to_ascii_lowercase();
+        if normalized_slug.starts_with("gpt-image-")
+            || normalized_slug.starts_with("chatgpt-image-")
+        {
+            return Err(format!("图片专用模型不能作为文本主模型(image-only model cannot be used as a text-generation primary model): {slug}"));
         }
         return Ok(());
     };

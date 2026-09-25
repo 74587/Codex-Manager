@@ -74,6 +74,8 @@ pub(crate) fn summarize_upstream_error_hint_from_body(
 mod delivery;
 mod stream_readers;
 
+const DEFAULT_BRIDGE_MODEL: &str = "gpt-6-sol";
+
 static FINALIZATION_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(32);
 static DEFERRED_RESPONSES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(256);
 static ACTIVE_DEFERRED_RESPONSES: std::sync::atomic::AtomicUsize =

@@ -762,7 +762,7 @@ mod tests {
                 model: image_model,
             })
             .expect("make image model hidden and unavailable");
-        let requested_keys = HashSet::from(["gpt-5.4", "gpt-image-2"]);
+        let requested_keys = HashSet::from(["gpt-6-sol", "gpt-image-2"]);
         let expected = crate::models_v2::list_with_storage(&storage, true)
             .expect("list full catalog")
             .items
@@ -776,8 +776,8 @@ mod tests {
             &storage,
             vec![
                 " GPT-IMAGE-2 ".to_string(),
-                "gpt-5.4".to_string(),
-                "GPT-5.4".to_string(),
+                "gpt-6-sol".to_string(),
+                "GPT-6-SOL".to_string(),
             ],
         )
         .await

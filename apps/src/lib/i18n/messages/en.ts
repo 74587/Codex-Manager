@@ -1061,8 +1061,7 @@ export const EN_MESSAGES: MessageCatalog = {
   目标模型: "Target model",
   新增规则: "Add rule",
   "例如：spark*": "e.g. spark*",
-  "例如：gpt-5.4": "e.g. gpt-5.4",
-  "例如：gpt-5.4-openai-compact": "e.g. gpt-5.4-openai-compact",
+  "例如：gpt-6-sol": "e.g. gpt-6-sol",
   "左边匹配请求模型，右边填写转发目标；支持":
     "Match the request model on the left and enter the forwarding target on the right. Supports",
   "通配。平台 Key 没有强绑模型时，会先按这里把请求模型改写，再进入账号路由。":
@@ -1478,8 +1477,8 @@ export const EN_MESSAGES: MessageCatalog = {
   "重新打开 Codex CLI 引导": "Reopen the Codex CLI guide",
   后续将不再显示这份引导: "This guide will no longer be shown",
   "保存引导状态失败: {message}": "Failed to save guide state: {message}",
-  "主对话模型，推荐直接使用 gpt-5.4 作为默认工作模型":
-    "Primary chat model. It is recommended to use gpt-5.4 as the default working model.",
+  "主对话模型，推荐直接使用 gpt-6-sol 作为默认工作模型":
+    "Primary chat model. It is recommended to use gpt-6-sol as the default working model.",
   "默认模型提供方，填写 cm 代表走下面定义的本地 provider":
     "Default model provider. Setting it to cm means using the local provider defined below.",
   "代码审查或 review 场景使用的模型，这里也保持与主模型一致":

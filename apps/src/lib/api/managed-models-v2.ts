@@ -115,10 +115,16 @@ export const managedModelsV2Client = {
     );
   },
 
-  syncPrices(addr?: string | null): Promise<ManagedModelPriceSyncV2Result> {
+  syncPrices(
+    modelSlugs: string[] = [],
+    addr?: string | null,
+  ): Promise<ManagedModelPriceSyncV2Result> {
     return invoke<ManagedModelPriceSyncV2Result>(
       "service_managed_model_price_sync_v2",
       withAddr({
+        payload: {
+          modelSlugs,
+        },
         ...(addr === undefined ? {} : { addr: addr || null }),
       }),
     );
@@ -161,6 +167,8 @@ function serviceTierDescription(modelSlug: string, id: string): string {
     }
     if (
       new Set([
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.4",
         "gpt-5.5",
         "gpt-5.6-sol",

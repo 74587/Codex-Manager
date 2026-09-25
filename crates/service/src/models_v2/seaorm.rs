@@ -35,11 +35,16 @@ pub(super) fn upsert_many(
 }
 pub(super) fn update_prices(
     updates: Vec<ManagedModelPriceV2Update>,
+    allow_custom_override: bool,
 ) -> Result<Vec<String>, String> {
     seaorm_block_on(move |storage| async move {
-        ManagedModelsRepository::update_prices(storage.connection(), &updates)
-            .await
-            .map_err(|e| e.to_string())
+        ManagedModelsRepository::update_prices_with_custom_override(
+            storage.connection(),
+            &updates,
+            allow_custom_override,
+        )
+        .await
+        .map_err(|e| e.to_string())
     })
 }
 pub(super) fn update_states(

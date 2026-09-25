@@ -593,6 +593,10 @@ pub(crate) fn current_free_account_max_model() -> String {
     runtime_config::current_free_account_max_model()
 }
 
+pub(crate) fn is_obsolete_free_account_max_model(model: &str) -> bool {
+    runtime_config::is_obsolete_free_account_max_model(model)
+}
+
 /// 函数 `current_compact_model_override`
 ///
 /// 作者: gaohongshun

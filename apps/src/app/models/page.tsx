@@ -153,14 +153,15 @@ function modelMatchesFilter(model: ManagedModelV2, filter: ModelFilter): boolean
 }
 
 const BUILTIN_MODEL_DESCRIPTION_KEYS: Record<string, string> = {
+  "gpt-6-sol": "最新的前沿智能体编程模型。",
+  "gpt-6-luna": "快速且经济的智能体编程模型。",
   "gpt-5.6-sol": "最新的前沿智能体编程模型。",
   "gpt-5.6-terra": "适合日常工作的均衡型智能体编程模型。",
   "gpt-5.6-luna": "快速且经济的智能体编程模型。",
   "gpt-5.5": "适合复杂编程、研究和真实工作场景的前沿模型。",
-  "gpt-5.4": "适合日常编程的强大模型。",
-  "gpt-5.4-mini": "适合简单编程任务的小型、快速且高性价比模型。",
-  "gpt-5.2": "针对专业工作和长时间运行智能体优化的模型。",
   "gpt-image-2": "先进的图像生成和编辑模型。",
+  "gpt-image-2.5-sunburst": "用于高保真、强指令遵循图像生成和编辑的最先进模型。",
+  "gpt-image-2.5-flare": "适合日常使用的快速、高质量图像生成和编辑模型。",
   "codex-auto-review": "用于 Codex 自动审批审查的模型。",
 };
 
@@ -454,14 +455,18 @@ export default function ModelsPage() {
                   size="sm"
                   variant="outline"
                   disabled={!isServiceReady || isModelOperationPending}
-                  onClick={() => void syncPrices()}
+                  onClick={() => void syncPrices(selectedSlugs)}
                 >
                   {isSyncingPrices ? (
                     <RefreshCw className="mr-1.5 h-4 w-4 animate-spin" />
                   ) : (
                     <CircleDollarSign className="mr-1.5 h-4 w-4" />
                   )}
-                  {isSyncingPrices ? t("正在同步价格...") : t("同步价格")}
+                  {isSyncingPrices
+                    ? t("正在同步价格...")
+                    : selectedSlugs.length > 0
+                      ? `${t("同步价格")} (${selectedSlugs.length})`
+                      : t("同步价格")}
                 </Button>
               ) : null}
               {isAdminMode ? (
@@ -556,9 +561,14 @@ export default function ModelsPage() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   {t("显示来源、启用状态、价格状态、指令模式和路由状态。")}
                   {isAdminMode ? (
-                    <span className="mt-0.5 block text-primary/80">
-                      {t("未勾选模型时会应用全部模型；勾选后仅应用所选模型。批量操作仍需先勾选模型。")}
-                    </span>
+                    <>
+                      <span className="mt-0.5 block text-primary/80">
+                        {t("未勾选模型时会应用全部模型；勾选后仅应用所选模型。批量操作仍需先勾选模型。")}
+                      </span>
+                      <span className="mt-0.5 block text-primary/80">
+                        {t("未勾选时同步全部模型并保留自定义价格；勾选的模型会用外部价格覆盖自定义价格。")}
+                      </span>
+                    </>
                   ) : null}
                 </p>
               </div>

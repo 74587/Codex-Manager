@@ -412,16 +412,32 @@ fn transport_request_path(path: &str) -> String {
     path.to_string()
 }
 
-fn is_codex_image_tool_model(model: Option<&str>) -> bool {
+fn is_codex_image_tool_model(
+    storage: &codexmanager_core::storage::Storage,
+    model: Option<&str>,
+) -> bool {
     let Some(value) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
     };
-    if value.eq_ignore_ascii_case(DEFAULT_IMAGES_TOOL_MODEL) {
+    if value.eq_ignore_ascii_case(DEFAULT_IMAGES_TOOL_MODEL)
+        || value.eq_ignore_ascii_case(
+            super::super::runtime_config::current_codex_image_tool_model().as_str(),
+        )
+    {
         return true;
     }
-    value.eq_ignore_ascii_case(
-        super::super::runtime_config::current_codex_image_tool_model().as_str(),
-    )
+    let normalized_value = value.to_ascii_lowercase();
+    if normalized_value.starts_with("gpt-image-") || normalized_value.starts_with("chatgpt-image-")
+    {
+        return true;
+    }
+    crate::models_v2::managed_model(storage, crate::models_v2::policy_catalog_slug(value))
+        .ok()
+        .flatten()
+        .is_some_and(|model| {
+            crate::models_v2::supports_image_generation(&model)
+                && !crate::models_v2::supports_text_generation(&model)
+        })
 }
 
 fn is_openai_text_generation_path(normalized_path: &str) -> bool {
@@ -442,12 +458,14 @@ fn ensure_non_text_model_not_used_for_text_request(
         return Ok(());
     };
 
-    if is_codex_image_tool_model(Some(model_slug)) {
+    if is_codex_image_tool_model(storage, Some(model_slug)) {
         return Err(LocalValidationError::new(
             400,
             crate::gateway::bilingual_error(
-                "gpt-image-2 只能用于图片接口",
-                "model gpt-image-2 is only supported on /v1/images/generations and /v1/images/edits",
+                format!("模型 {model_slug} 只能用于图片接口"),
+                format!(
+                    "model {model_slug} is only supported on /v1/images/generations and /v1/images/edits"
+                ),
             ),
         ));
     }

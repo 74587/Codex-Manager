@@ -2319,6 +2319,7 @@ impl Storage {
             "136_reset_credit_operation_accounts",
             include_str!("../../migrations/136_reset_credit_operation_accounts.sql"),
         )?;
+        self.apply_model_catalog_revision9_migration()?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

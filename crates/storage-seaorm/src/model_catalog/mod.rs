@@ -3,6 +3,7 @@
 
 mod managed;
 pub(crate) mod models;
+mod reconcile;
 pub use managed::ManagedModelsRepository;
 pub(crate) mod price_tiers;
 pub(crate) mod prices;
@@ -10,6 +11,7 @@ pub(crate) mod routes;
 pub use models::{CatalogModelRecord, ModelCatalogRepository};
 pub use price_tiers::{CatalogPriceTierRecord, ModelPriceTiersRepository};
 pub use prices::{CatalogPriceRecord, ModelPricesRepository};
+pub(crate) use reconcile::reconcile_builtin_catalog;
 pub use routes::{CatalogRouteRecord, ModelRoutesRepository};
 
 use sha2::{Digest, Sha256};

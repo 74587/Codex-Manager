@@ -232,6 +232,14 @@ impl ManagedModelsRepository {
         db: &DatabaseConnection,
         updates: &[ManagedModelPriceV2Update],
     ) -> Result<Vec<String>, DbErr> {
+        Self::update_prices_with_custom_override(db, updates, false).await
+    }
+
+    pub async fn update_prices_with_custom_override(
+        db: &DatabaseConnection,
+        updates: &[ManagedModelPriceV2Update],
+        allow_custom_override: bool,
+    ) -> Result<Vec<String>, DbErr> {
         let mut seen = std::collections::HashSet::new();
         for update in updates {
             let slug = update.slug.trim();
@@ -245,8 +253,8 @@ impl ManagedModelsRepository {
         }
 
         let tx = db.begin().await?;
-        // Full model writes use the same lock, so a custom price cannot be
-        // interleaved between this check and the tier replacement.
+        // Full model writes use the same lock, so the custom-price policy
+        // cannot be interleaved between this check and tier replacement.
         crate::UsersRepository::lock(&tx, "model_groups").await?;
         let now = now_ts();
         let mut updated_slugs = Vec::new();
@@ -254,7 +262,7 @@ impl ManagedModelsRepository {
             let model = Self::get(&tx, update.slug.trim())
                 .await?
                 .ok_or_else(|| DbErr::Custom(format!("model_not_found: {}", update.slug)))?;
-            if model.price.price_status == "custom" {
+            if model.price.price_status == "custom" && !allow_custom_override {
                 continue;
             }
             if update.price.price_status == "missing" {
@@ -463,6 +471,9 @@ impl ManagedModelsRepository {
         let record = ModelCatalogRepository::find_by_slug(&tx, slug)
             .await?
             .ok_or_else(|| DbErr::Custom("model_not_found".into()))?;
+        if record.origin == "builtin" {
+            super::reconcile::mark_builtin_deleted(&tx, &record.slug, now_ts()).await?;
+        }
         ModelCatalogRepository::delete(&tx, &record.id).await?;
         tx.commit().await
     }

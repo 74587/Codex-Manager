@@ -28,7 +28,7 @@ import psutil
 
 KEY = "fixture-migration-platform-key"
 RPC_TOKEN = "fixture-migration-rpc-token"
-MODEL = "gpt-5.4-mini"
+MODEL = "gpt-6-luna"
 
 
 def free_port():

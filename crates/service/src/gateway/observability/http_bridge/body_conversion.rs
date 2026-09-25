@@ -649,7 +649,7 @@ pub(super) fn convert_responses_body_to_chat_completions(body: &[u8]) -> Option<
         .get("model")
         .or_else(|| value.get("model"))
         .and_then(Value::as_str)
-        .unwrap_or("gpt-5.4");
+        .unwrap_or(super::DEFAULT_BRIDGE_MODEL);
     let created = response
         .get("created_at")
         .or_else(|| response.get("created"))
@@ -786,7 +786,7 @@ pub(super) fn chat_completion_body_to_single_sse(body: &[u8]) -> Vec<u8> {
     let model = value
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or("gpt-5.4");
+        .unwrap_or(super::DEFAULT_BRIDGE_MODEL);
     let created = value.get("created").and_then(Value::as_i64).unwrap_or(0);
     let content = value
         .get("choices")

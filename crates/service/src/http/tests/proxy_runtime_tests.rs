@@ -596,7 +596,7 @@ fn insert_api_key_record(
         .insert_api_key(&ApiKey {
             id: "gk_proxy_runtime_ws".to_string(),
             name: Some("proxy-runtime-ws".to_string()),
-            model_slug: Some("gpt-5.4-mini".to_string()),
+            model_slug: Some("gpt-6-luna".to_string()),
             reasoning_effort: Some("high".to_string()),
             service_tier: Some("fast".to_string()),
             rotation_strategy: rotation_strategy.to_string(),
@@ -2511,11 +2511,11 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     let first_payload: serde_json::Value =
         serde_json::from_str(&first_upstream_frame).expect("parse first upstream frame");
     assert_eq!(first_payload["type"], "response.create");
-    assert_eq!(first_payload["model"], "gpt-5.4-mini");
+    assert_eq!(first_payload["model"], "gpt-6-luna");
     assert!(first_payload.get("stream").is_none());
     assert!(first_payload.get("background").is_none());
     assert_eq!(first_payload["store"], true);
-    assert!(first_payload.get("service_tier").is_none());
+    assert_eq!(first_payload["service_tier"], "priority");
     assert_eq!(first_payload["generate"], false);
     assert_eq!(first_payload["prompt_cache_key"], "session_ws_1");
 
@@ -2549,13 +2549,13 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     }
 
     let mut model = storage
-        .get_managed_model_v2("gpt-5.4-mini")
+        .get_managed_model_v2("gpt-6-luna")
         .expect("read websocket model")
         .expect("websocket model");
     model.fast_policy = ModelFastPolicyV2::Filter;
     storage
         .upsert_managed_model_v2(&ManagedModelV2Upsert {
-            previous_slug: Some("gpt-5.4-mini".to_string()),
+            previous_slug: Some("gpt-6-luna".to_string()),
             model,
         })
         .expect("update websocket model fast policy");
@@ -2727,10 +2727,10 @@ async fn official_responses_websocket_proxies_frames_and_headers() {
     assert!(
         ws_logs.iter().any(|item| {
             item.service_tier.as_deref() == Some("fast")
-                && item.effective_service_tier.is_none()
-                && item.service_tier_source.as_deref() == Some("model_policy")
+                && item.effective_service_tier.as_deref() == Some("fast")
+                && item.service_tier_source.as_deref() == Some("client_request")
         }),
-        "expected websocket request log to record the unsupported fast tier as filtered"
+        "expected websocket request log to record the supported fast tier"
     );
     assert!(
         ws_logs.iter().any(|item| item.service_tier.is_none()),
@@ -2877,13 +2877,13 @@ async fn official_responses_websocket_block_policy_rejects_initial_frame() {
         Some("http://127.0.0.1:1/chatgpt.com/backend-api/codex".to_string()),
     );
     let mut model = storage
-        .get_managed_model_v2("gpt-5.4-mini")
+        .get_managed_model_v2("gpt-6-luna")
         .expect("read websocket block model")
         .expect("websocket block model");
     model.fast_policy = ModelFastPolicyV2::Block;
     storage
         .upsert_managed_model_v2(&ManagedModelV2Upsert {
-            previous_slug: Some("gpt-5.4-mini".to_string()),
+            previous_slug: Some("gpt-6-luna".to_string()),
             model,
         })
         .expect("update websocket initial block policy");
@@ -2911,7 +2911,7 @@ async fn official_responses_websocket_block_policy_rejects_initial_frame() {
         .send(Message::Text(
             serde_json::json!({
                 "type": "response.create",
-                "model": "gpt-5.4-mini",
+                "model": "gpt-6-luna",
                 "input": "blocked initial request",
                 "service_tier": "fast"
             })

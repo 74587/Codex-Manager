@@ -396,7 +396,7 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
         first.selected_api_key_id.as_deref(),
         Some(api_key.id.as_str())
     );
-    let applied_models = apply_models_async(Some(&codex_home), vec!["gpt-5.4".to_string()], true)
+    let applied_models = apply_models_async(Some(&codex_home), vec!["gpt-6-sol".to_string()], true)
         .await
         .expect("apply selected gateway model");
     assert!(applied_models
@@ -407,12 +407,12 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
         load_state()
             .expect("state after applying models")
             .managed_model_slugs,
-        vec!["gpt-5.4"]
+        vec!["gpt-6-sol"]
     );
 
     let paths = managed_profile_paths(&dir).expect("managed profile paths");
     let mut model = storage
-        .get_managed_model_v2("gpt-5.4")
+        .get_managed_model_v2("gpt-6-sol")
         .expect("read managed model")
         .expect("seeded managed model");
     model.display_name = "GPT Reapplied".to_string();
@@ -442,7 +442,7 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
     assert!(catalog["models"].as_array().is_some_and(|models| {
         models
             .iter()
-            .any(|model| model["slug"] == "gpt-5.4" && model["display_name"] == "GPT Reapplied")
+            .any(|model| model["slug"] == "gpt-6-sol" && model["display_name"] == "GPT Reapplied")
     }));
 
     let config =
@@ -513,6 +513,92 @@ async fn reapplying_gateway_profile_refreshes_catalog_and_requests_runtime_reloa
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn service_startup_reconciles_stale_gateway_model_selection() {
+    let _env_lock = crate::test_env_guard();
+    let dir = temp_profile("startup-stale-gateway-model");
+    let _db_guard = set_test_db(&dir);
+    let _backend_guard = EnvGuard::remove("CODEXMANAGER_STORAGE_BACKEND");
+    let _database_url_guard = EnvGuard::remove("CODEXMANAGER_DATABASE_URL");
+    let managed_root = dir.join("managed");
+    let _managed_root_guard = EnvGuard::set(
+        "CODEXMANAGER_TEST_DB_DIR",
+        managed_root.to_string_lossy().as_ref(),
+    );
+    let storage = Storage::open(dir.join("codexmanager.db")).expect("open test storage");
+    storage.init().expect("init test storage");
+    let api_key = ApiKey {
+        id: "key-startup-stale-model".to_string(),
+        name: Some("Startup stale model".to_string()),
+        model_slug: None,
+        reasoning_effort: None,
+        service_tier: None,
+        rotation_strategy: crate::apikey_profile::ROTATION_HYBRID.to_string(),
+        aggregate_api_id: None,
+        account_plan_filter: None,
+        aggregate_api_url: None,
+        client_type: crate::apikey_profile::CLIENT_CODEX.to_string(),
+        protocol_type: crate::apikey_profile::PROTOCOL_OPENAI_COMPAT.to_string(),
+        auth_scheme: crate::apikey_profile::AUTH_BEARER.to_string(),
+        upstream_base_url: None,
+        static_headers_json: None,
+        key_hash: "startup-stale-model-hash".to_string(),
+        status: "active".to_string(),
+        created_at: now_ts(),
+        last_used_at: None,
+    };
+    storage
+        .insert_api_key(&api_key)
+        .expect("insert platform key");
+    storage
+        .upsert_api_key_secret(&api_key.id, "cm-startup-stale-secret")
+        .expect("insert platform key secret");
+
+    let codex_home = dir.to_string_lossy().to_string();
+    apply_gateway(
+        Some(&api_key.id),
+        Some(&codex_home),
+        Some("http://127.0.0.1:48760"),
+        Some(false),
+        false,
+    )
+    .expect("apply gateway profile");
+    let stale_slug = "stale-startup-model";
+    insert_custom_model_clone(&storage, "gpt-6-sol", stale_slug);
+    apply_models(Some(&codex_home), vec![stale_slug.to_string()], false)
+        .expect("apply model before startup reconciliation");
+    storage
+        .delete_managed_model_v2(stale_slug)
+        .expect("delete selected model without updating profile state");
+    assert_eq!(
+        load_state()
+            .expect("state before startup reconciliation")
+            .managed_model_slugs,
+        vec![stale_slug]
+    );
+
+    crate::lifecycle::startup::reconcile_active_gateway_profile_after_startup_async().await;
+
+    let paths = managed_profile_paths(&dir).expect("managed profile paths");
+    assert!(load_state()
+        .expect("state after startup reconciliation")
+        .managed_model_slugs
+        .is_empty());
+    assert!(read_marker(&paths.marker_path)
+        .expect("marker after startup reconciliation")
+        .managed_model_slugs
+        .is_empty());
+    let catalog_content = fs::read_to_string(&paths.gateway_model_catalog_path)
+        .expect("read reconciled gateway catalog");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&catalog_content).expect("parse reconciled gateway catalog");
+    assert!(catalog["models"].as_array().is_some_and(|models| {
+        !models.is_empty() && models.iter().all(|model| model["slug"] != stale_slug)
+    }));
+
+    cleanup_profile(&dir);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn applying_models_without_an_api_key_preserves_existing_profile_configuration() {
     let _env_lock = crate::test_env_guard();
     let dir = temp_profile("apply-models-without-api-key");
@@ -527,7 +613,7 @@ async fn applying_models_without_an_api_key_preserves_existing_profile_configura
     let storage = Storage::open(dir.join("codexmanager.db")).expect("open test storage");
     storage.init().expect("init test storage");
     let mut selected_model = storage
-        .get_managed_model_v2("gpt-5.4")
+        .get_managed_model_v2("gpt-6-sol")
         .expect("read selected model")
         .expect("seeded selected model");
     selected_model.enabled = false;
@@ -578,7 +664,7 @@ experimental_bearer_token = "external-provider-secret"
     fs::write(&paths.gateway_model_catalog_path, "stale catalog").expect("write stale catalog");
     let error = apply_models_async(
         Some(dir.to_string_lossy().as_ref()),
-        vec![" GPT-5.4 ".to_string(), "gpt-5.4".to_string()],
+        vec![" GPT-6-SOL ".to_string(), "gpt-6-sol".to_string()],
         false,
     )
     .await
@@ -593,7 +679,7 @@ experimental_bearer_token = "external-provider-secret"
 
     let status = apply_models_async(
         Some(dir.to_string_lossy().as_ref()),
-        vec![" GPT-5.4 ".to_string(), "gpt-5.4".to_string()],
+        vec![" GPT-6-SOL ".to_string(), "gpt-6-sol".to_string()],
         true,
     )
     .await
@@ -655,12 +741,12 @@ experimental_bearer_token = "external-provider-secret"
         serde_json::from_str(&catalog_content).expect("parse managed catalog");
     let models = catalog["models"].as_array().expect("models array");
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0]["slug"], "gpt-5.4");
+    assert_eq!(models[0]["slug"], "gpt-6-sol");
     assert_eq!(models[0]["visibility"], "list");
     assert_eq!(models[0]["supported_in_api"], true);
     assert_eq!(
         storage
-            .get_managed_model_v2("gpt-5.4")
+            .get_managed_model_v2("gpt-6-sol")
             .expect("read persisted selected model")
             .expect("persisted selected model")
             .supported_in_api,
@@ -668,12 +754,12 @@ experimental_bearer_token = "external-provider-secret"
         "Codex picker compatibility must not change the stored gateway/API flag"
     );
     let state = load_state().expect("managed state");
-    assert_eq!(state.managed_model_slugs, vec!["gpt-5.4"]);
+    assert_eq!(state.managed_model_slugs, vec!["gpt-6-sol"]);
     let marker = read_marker(&paths.marker_path).expect("managed marker");
-    assert_eq!(marker.managed_model_slugs, vec!["gpt-5.4"]);
+    assert_eq!(marker.managed_model_slugs, vec!["gpt-6-sol"]);
 
     let mut refreshed_model = storage
-        .get_managed_model_v2("gpt-5.4")
+        .get_managed_model_v2("gpt-6-sol")
         .expect("read selected model for refresh")
         .expect("selected model for refresh");
     refreshed_model.display_name = "Selected model refreshed".to_string();
@@ -705,7 +791,7 @@ experimental_bearer_token = "external-provider-secret"
         .as_array()
         .expect("refreshed models array");
     assert_eq!(refreshed_models.len(), 1);
-    assert_eq!(refreshed_models[0]["slug"], "gpt-5.4");
+    assert_eq!(refreshed_models[0]["slug"], "gpt-6-sol");
     assert_eq!(
         refreshed_models[0]["display_name"],
         "Selected model refreshed"
@@ -735,7 +821,7 @@ experimental_bearer_token = "external-provider-secret"
 
     assert!(sync_active_gateway_profile_from_storage_with_changes_async(
         &storage,
-        vec![ManagedModelSelectionChange::remove("gpt-5.4")],
+        vec![ManagedModelSelectionChange::remove("gpt-6-sol")],
     )
     .await
     .expect("remove the last applied model"));
@@ -758,7 +844,7 @@ experimental_bearer_token = "external-provider-secret"
     );
 
     let stale_external_slug = "stale-custom-external";
-    insert_custom_model_clone(&storage, "gpt-5.4", stale_external_slug);
+    insert_custom_model_clone(&storage, "gpt-6-sol", stale_external_slug);
     apply_models_async(
         Some(dir.to_string_lossy().as_ref()),
         vec![stale_external_slug.to_string()],
@@ -933,7 +1019,7 @@ custom_setting = true
         let failure_guard = EnvGuard::set("CODEXMANAGER_TEST_APPLY_MODELS_FAIL_AFTER", stage);
         let error = apply_models_async(
             Some(dir.to_string_lossy().as_ref()),
-            vec!["gpt-5.4".to_string()],
+            vec!["gpt-6-sol".to_string()],
             false,
         )
         .await
@@ -1003,7 +1089,7 @@ async fn first_apply_models_failure_removes_new_managed_state() {
     let failure_guard = EnvGuard::set("CODEXMANAGER_TEST_APPLY_MODELS_FAIL_AFTER", "after_state");
     let error = apply_models_async(
         Some(dir.to_string_lossy().as_ref()),
-        vec!["gpt-5.4".to_string()],
+        vec!["gpt-6-sol".to_string()],
         false,
     )
     .await

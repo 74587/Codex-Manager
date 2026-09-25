@@ -32,6 +32,8 @@ export const EN_MODELS_MESSAGES: MessageCatalog = {
   应用模型失败: "Failed to apply models",
   "未勾选模型时会应用全部模型；勾选后仅应用所选模型。批量操作仍需先勾选模型。":
     "With no selection, all models are applied. With a selection, only the selected models are applied. Batch actions still require selecting models first.",
+  "未勾选时同步全部模型并保留自定义价格；勾选的模型会用外部价格覆盖自定义价格。":
+    "With no selection, price sync covers all models and preserves custom prices; selected models allow external prices to overwrite custom prices.",
   "导入到本地网关目录": "Import into local gateway catalog",
   "新增网关自定义模型": "Add custom gateway model",
   "当前 Codex 模型来源": "Current Codex model source",
@@ -190,6 +192,10 @@ export const EN_MODELS_MESSAGES: MessageCatalog = {
     "Optimized for professional work and long-running agents.",
   "先进的图像生成和编辑模型。":
     "State-of-the-art image generation and editing model.",
+  "用于高保真、强指令遵循图像生成和编辑的最先进模型。":
+    "Most advanced model for high-fidelity, instruction-following image generation and editing.",
+  "适合日常使用的快速、高质量图像生成和编辑模型。":
+    "Fast, high-quality image generation and editing for everyday use.",
   "用于 Codex 自动审批审查的模型。":
     "Automatic approval review model for Codex.",
   "已删除 {count} 个模型": "Deleted {count} models",

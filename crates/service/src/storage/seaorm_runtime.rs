@@ -40,6 +40,10 @@ async fn load_storage() -> Result<SeaOrmStorage, String> {
         .map_err(|err| err.to_string())?;
     storage.migrate().await.map_err(|err| err.to_string())?;
     storage
+        .reconcile_builtin_model_catalog()
+        .await
+        .map_err(|err| err.to_string())?;
+    storage
         .health_check()
         .await
         .map_err(|err| err.to_string())?;
@@ -108,7 +112,7 @@ pub(crate) fn clear_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codexmanager_storage_seaorm::{AppSetting, SettingsRepository};
+    use codexmanager_storage_seaorm::{AppSetting, ManagedModelsRepository, SettingsRepository};
 
     struct EnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
     impl Drop for EnvGuard {
@@ -157,6 +161,27 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(value.value, "kept");
+        let catalog_slugs = run(|storage| async move {
+            ManagedModelsRepository::list(storage.connection(), true)
+                .await
+                .map(|models| {
+                    models
+                        .into_iter()
+                        .map(|model| model.slug)
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+        assert_eq!(catalog_slugs.len(), 11);
+        for slug in [
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-flare",
+        ] {
+            assert!(catalog_slugs.iter().any(|candidate| candidate == slug));
+        }
         std::env::set_var(
             "CODEXMANAGER_DATABASE_URL",
             "sqlite://would-switch.sqlite?mode=rwc",

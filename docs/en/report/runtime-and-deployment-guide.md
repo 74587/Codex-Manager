@@ -39,9 +39,9 @@ If you used a custom platform key, `OPENAI_API_KEY` must be that same custom val
 Example `config.toml`:
 
 ```toml
-model = "gpt-5.4"
+model = "gpt-6-sol"
 model_provider = "cm"
-review_model = "gpt-5.4"
+review_model = "gpt-6-sol"
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 cli_auth_credentials_store = "file"
