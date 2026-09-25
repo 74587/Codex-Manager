@@ -620,6 +620,25 @@ fn prepare_managed_model(model: &mut codexmanager_core::rpc::types::ModelInfo) {
         .availability_nux
         .get_or_insert(serde_json::Value::Null);
     model.upgrade.get_or_insert(serde_json::Value::Null);
+    if let Some(serde_json::Value::Object(upgrade)) = model.upgrade.as_mut() {
+        let migration_markdown = upgrade
+            .get("migration_markdown")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                upgrade
+                    .get("upgrade_copy")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .unwrap_or_default()
+            .to_string();
+        upgrade.insert(
+            "migration_markdown".to_string(),
+            serde_json::Value::String(migration_markdown),
+        );
+        upgrade
+            .entry("retirement_at".to_string())
+            .or_insert(serde_json::Value::Null);
+    }
     model.model_messages.get_or_insert_with(|| {
         serde_json::json!({
             "instructions_template": "",
@@ -912,6 +931,31 @@ mod tests {
             value["models"][0]["shell_type"].as_str(),
             Some("custom_shell")
         );
+    }
+
+    #[test]
+    fn gateway_catalog_normalizes_legacy_upgrade_metadata_for_current_codex() {
+        let catalog = ModelsResponse {
+            models: vec![ModelInfo {
+                slug: "gpt-old".to_string(),
+                display_name: "GPT Old".to_string(),
+                upgrade: Some(serde_json::json!({
+                    "model": "gpt-new",
+                    "upgrade_copy": "Use GPT New"
+                })),
+                ..ModelInfo::default()
+            }],
+            ..ModelsResponse::default()
+        };
+
+        let content = serialize_gateway_model_catalog(&catalog).expect("serialize catalog");
+        let value: Value = serde_json::from_str(&content).expect("parse catalog");
+        let upgrade = &value["models"][0]["upgrade"];
+
+        assert_eq!(upgrade["model"].as_str(), Some("gpt-new"));
+        assert_eq!(upgrade["upgrade_copy"].as_str(), Some("Use GPT New"));
+        assert_eq!(upgrade["migration_markdown"].as_str(), Some("Use GPT New"));
+        assert!(upgrade["retirement_at"].is_null());
     }
 
     #[test]
